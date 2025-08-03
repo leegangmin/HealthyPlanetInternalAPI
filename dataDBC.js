@@ -26,14 +26,25 @@ const getReplenishData = async (req) => {
     'vendor_no',
   ];
 
+  // if (term === 'all') {
+  //   const matchColumns = fullTextColumns.join(', ');
+  //   const [rows] = await promisePool.query(
+  //     `
+  //     SELECT * FROM store_data
+  //     WHERE MATCH (${matchColumns}) AGAINST (? IN BOOLEAN MODE)
+  //     `,
+  //     [`${value}*`]
+  //   );
+  //   return rows;
+  // }
+
   if (term === 'all') {
-    const matchColumns = fullTextColumns.join(', ');
+    const likeClauses = fullTextColumns.map(col => `${col} LIKE ?`).join(' OR ');
+    const values = fullTextColumns.map(() => `%${value}%`);
+  
     const [rows] = await promisePool.query(
-      `
-      SELECT * FROM store_data
-      WHERE MATCH (${matchColumns}) AGAINST (? IN BOOLEAN MODE)
-      `,
-      [`${value}*`]
+      `SELECT * FROM store_data WHERE ${likeClauses}`,
+      values
     );
     return rows;
   }
