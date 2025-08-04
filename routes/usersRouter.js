@@ -35,7 +35,6 @@ const authenticateToken = (req, res, next) => {
 router.post('/getusers', async (req, res) => {
   console.log(req.body);
 
-
   let res_get_users = {
     status_code: 500,
     user: '',
@@ -126,19 +125,19 @@ router.post('/signin', async (req, res) => {
     const resultData = result;
 
     if (rows.length > 0) {
-    // if (rows.length > 0 && rows[0].pw == req.body.pw) {
+      // if (rows.length > 0 && rows[0].pw == req.body.pw) {
       delete rows[0]['pw'];
 
       result.user = rows[0];
       const accessToken = jwt.sign({ rows }, SECRET_KEY, { expiresIn: '2h' });
-      const refreshToken = jwt.sign({ id }, SECRET_KEY, { expiresIn: '7d' });
+      const refreshToken = jwt.sign({ id }, SECRET_KEY, { expiresIn: '12h' });
 
       res.cookie('accessToken', accessToken, {
         httpOnly: true,
         secure: true,
         sameSite: 'strict',
         domain: '.gangminlee.com',
-        maxAge: 2 * 69 * 60 * 1000, // 2hrs
+        maxAge: 2 * 60 * 60 * 1000, // 2hrs
       });
 
       res.cookie('refreshToken', refreshToken, {
@@ -146,7 +145,7 @@ router.post('/signin', async (req, res) => {
         secure: true,
         sameSite: 'strict',
         domain: '.gangminlee.com',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7days
+        maxAge: 12 * 60 * 60 * 1000, // 12hrs
       });
 
       return res.json({ resultData });
@@ -236,7 +235,7 @@ router.post('/auth', authenticateToken, async (req, res) => {
         secure: true,
         sameSite: 'strict',
         domain: '.gangminlee.com',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7days
+        maxAge: 12 * 60 * 60 * 1000, // 12hrs
       });
 
       return res.json({ resultData });
