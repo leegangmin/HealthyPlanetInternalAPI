@@ -16,7 +16,7 @@ const pool = mysql.createPool({
 const getReplenishData = async (req) => {
   const { term, value } = req;
   const promisePool = pool.promise();
-
+  
   const fullTextColumns = [
     'item_no',
     'variant_code',
@@ -26,25 +26,19 @@ const getReplenishData = async (req) => {
     'vendor_no',
   ];
 
-  // if (term === 'all') {
-  //   const matchColumns = fullTextColumns.join(', ');
-  //   const [rows] = await promisePool.query(
-  //     `
-  //     SELECT * FROM store_data
-  //     WHERE MATCH (${matchColumns}) AGAINST (? IN BOOLEAN MODE)
-  //     `,
-  //     [`${value}*`]
-  //   );
-  //   return rows;
-  // }
-
   if (term === 'all') {
-    const likeClauses = fullTextColumns.map(col => `${col} LIKE ?`).join(' OR ');
-    const values = fullTextColumns.map(() => `%${value}%`);
-  
+    const words = value.trim().split(/\s+/);
+    const booleanSearch = words.map(w => `+${w}*`).join(' ');
+
+    const matchColumns = fullTextColumns.join(', ');
+
     const [rows] = await promisePool.query(
-      `SELECT * FROM store_data WHERE ${likeClauses}`,
-      values
+      `
+      SELECT * FROM store_data
+      WHERE MATCH (${matchColumns})
+      AGAINST (? IN BOOLEAN MODE)
+      `,
+      [booleanSearch]
     );
     return rows;
   }
@@ -60,6 +54,7 @@ const getReplenishData = async (req) => {
 
   return rows;
 };
+
 
 const log = async (req) => {
   // console.log('log in dataDBC', req);
