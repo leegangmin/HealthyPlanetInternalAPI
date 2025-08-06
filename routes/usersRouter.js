@@ -31,28 +31,79 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// get user info (just for testing, will be discontinued)
-router.post('/getusers', async (req, res) => {
-  console.log(req.body);
-
-  let res_get_users = {
+// get user lists
+router.post('/getMembers', async (req, res) => {
+  let res_get_members = {
     status_code: 500,
-    user: '',
+    data: [],
   };
 
   try {
-    const rows = await userDBC.getUsers(req.body);
-    res_get_users.status_code = 200;
-    if (rows.length > 0) {
-      res_get_users.user = rows;
+    const rows = await userDBC.getMembers(req.body);
+    res_get_members.status_code = 200;
+    if (rows !== null) {
+      res_get_members.data = rows;
     } else {
       console.log('User not found');
-      res_get_users.user = [];
     }
   } catch (error) {
     console.log(error.message);
   } finally {
-    const result = res_get_users;
+    const result = res_get_members;
+
+    res.send(result);
+  }
+});
+
+// get user active info
+router.post('/active', async (req, res) => {
+  console.log(req.body);
+
+  let res_get_active = {
+    status_code: 500,
+    active: null,
+    privilege: null,
+  };
+
+  try {
+    const rows = await userDBC.getActive(req.body);
+    console.log(rows);
+    res_get_active.status_code = 200;
+    if (rows !== null) {
+      res_get_active.active = rows.active;
+      res_get_active.privilege = rows.privilege;
+    } else {
+      console.log('User not found');
+    }
+  } catch (error) {
+    console.log(error.message);
+  } finally {
+    const result = res_get_active;
+
+    res.send(result);
+  }
+});
+
+// reset user info
+router.post('/reset', async (req, res) => {
+  let res_get_reset = {
+    status_code: 500,
+    result: null,
+  };
+
+  try {
+    const rows = await userDBC.reset(req.body);
+    res_get_reset.status_code = 200;
+    if (rows !== null) {
+      res_get_reset.reset = rows;
+      res_get_reset.result = true;
+    } else {
+      console.log('User not found');
+    }
+  } catch (error) {
+    console.log(error.message);
+  } finally {
+    const result = res_get_reset;
 
     res.send(result);
   }
@@ -94,17 +145,6 @@ router.post('/signup', async (req, res) => {
 // get signed in user info
 router.post('/signin', async (req, res) => {
   const { id, pw } = req.body;
-
-  // console.log('/signin in usersRouter.js');
-  // console.log(req.body);
-
-  // const compared = await bcrypt.compare(req.body.pw, rows[0][0].pw);
-  // console.log('compared', compared)
-
-  // one-way hashing the password before access to database
-  // if (req.body.pw !== null || req.body.pw !== '') {
-  //   req.body.pw = hashedPassword(req.body.pw);
-  // }
 
   let result = {
     message: true,

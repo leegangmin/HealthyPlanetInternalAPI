@@ -30,16 +30,13 @@ const getReplenishData = async (req) => {
     if (term === 'all') {
       const words = value.trim().split(/\s+/);
 
-      // 숫자만 있는 단어와 아닌 단어 분리
       const numericWords = words.filter(w => /^\d+$/.test(w));
       const nonNumericWords = words.filter(w => !/^\d+$/.test(w));
 
-      // FULLTEXT BOOLEAN MODE 검색용 문자열 만들기 (AND 조건)
       const booleanSearch = nonNumericWords.map(w => `+${w}*`).join(' ');
 
       if (numericWords.length === 0) {
         if (booleanSearch.length === 0) {
-          // 검색어 없으면 빈 배열 반환
           return [];
         }
         const matchColumns = fullTextColumns.join(', ');
@@ -53,7 +50,6 @@ const getReplenishData = async (req) => {
         );
         return rows;
       } else {
-        // 숫자 단어가 있을 때는 복합 조건
         const fullTextCondition = booleanSearch.length > 0
           ? `MATCH (${fullTextColumns.join(', ')}) AGAINST (? IN BOOLEAN MODE)`
           : '1';
@@ -79,12 +75,10 @@ const getReplenishData = async (req) => {
       }
     }
 
-    // term 유효성 검사 (화이트리스트)
     if (!fullTextColumns.includes(term)) {
       throw new Error('Invalid search term');
     }
 
-    // 단일 컬럼 검색 시 숫자-only면 뒤쪽 매칭으로 처리
     let likeValue = `%${value}%`;
     if (term === 'item_no' && /^\d+$/.test(value)) {
       likeValue = `%${value}`;

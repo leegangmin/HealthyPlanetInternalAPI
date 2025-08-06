@@ -14,64 +14,90 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-// ********************************** Temporary use only
-const getUsers = async (req) => {
+const signIn = async (req) => {
+  const { id, pw } = req;
+
+  if (!id || !pw) return null;
+
+  const promisePool = pool.promise();
+
+  const [rows] = await promisePool.query('SELECT * FROM user WHERE id = ?', [
+    id,
+  ]);
+
+  if (rows.length === 0) return null;
+
+  const user = rows[0];
+  const matched = await bcrypt.compare(pw, user.pw);
+
+  return matched ? rows : [];
+};
+
+const getActive = async (req) => {
   const id = req.id;
   const promisePool = pool.promise();
-  const rows = await promisePool.query(`select * from user where id='${id}';`);
+
+  const [rows] = await promisePool.query(
+    'SELECT active, privilege FROM user WHERE id = ?',
+    [id]
+  );
+
+  if (rows.length === 0) return null;
+
   return rows[0];
 };
 
-const signUp = async (req) => {
-  // console.log('joinUser in userDBC', req);
+// reset user info
+const reset = async (req) => {
+  const id = req.id;
+  const name = req.name;
+  const pw = req.password;
+  const promisePool = pool.promise();
 
   const SALT_ROUNDS = 10;
 
-  // const compared = await bcrypt.compare(req.body.opw, req.body.pw)
+  const hashedPassword = await bcrypt.hash(pw, SALT_ROUNDS);
 
-  const hashedPassword = await bcrypt.hash(req.body.pw, SALT_ROUNDS);
-
-  console.log(hashedPassword);
-
-  const id = req.id;
-  const pw = hashedPassword;
-  const name = req.name;
-  const location = req.location;
-  const privilege = req.privilege;
-  const promisePool = pool.promise();
-  const rows = await promisePool.query(
-    `INSERT INTO user(id, pw, name, location, privilege, joined_at) VALUES('${id}', '${pw}', '${name}', '${location}', '${privilege}', NOW());`
+  const [rows] = await promisePool.query(
+    `UPDATE user SET name = ?, pw = ?, active = ? WHERE id = ?`,
+    [name, hashedPassword, 1, id]
   );
 
-  return rows[0];
+  return rows;
 };
 
-const signIn = async (req) => {
-  // console.log('userDBC', req);
-  const id = req.id;
-  // const pw = req.pw;
+const getMembers = async (req) => {
+  const privilege = req.privilege;
+
+  if (privilege > 199) {
+    return null;
+  }
+
   const promisePool = pool.promise();
 
-  const rows = await promisePool.query(`select * from user where id='${id}';`);
-  const compared = await bcrypt.compare(req.pw, rows[0][0].pw);
+  const [rows] = await promisePool.query(`
+    SELECT 
+      uid,
+      id,
+      name,
+      location,
+      privilege,
+      joined_at,
+      updated_at,
+      active
+    FROM user
+  `);
 
-  // console.log(compared)
-  // console.log(rows[0])
-  
+  // console.log(rows)
 
-  return compared ? rows[0] : [];
-};
+  if (rows.length === 0) return null;
 
-const getAccess = async (req) => {
-  const id = req.id;
-  const promisePool = pool.promise();
-  const rows = await promisePool.query(`select * from user where id='${id}';`);
-  return rows[0];
+  return rows;
 };
 
 module.exports = {
-  getUsers,
-  signUp,
   signIn,
-  getAccess,
+  getActive,
+  reset,
+  getMembers,
 };
