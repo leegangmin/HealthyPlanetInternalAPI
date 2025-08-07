@@ -111,7 +111,75 @@ const log = async (req) => {
   }
 };
 
+async function updateStoreData(dataArray) {
+  if (dataArray.length === 0) return 0;
+
+  const sql = `
+    INSERT INTO store_data
+    (item_no, variant_code, brand, description, sub_description, location_code, promo_code, back_ordered,
+     planogram_item, daily_sales, inventory, qty_on_po, qty_on_so, qty_in_ti, qty_in_to, sales_31_60days,
+     sales_30days, item_division_code, item_category_code, item_product_group_code, vendor_no, timestamp, visible)
+    VALUES ?
+    ON DUPLICATE KEY UPDATE
+      variant_code = VALUES(variant_code),
+      brand = VALUES(brand),
+      description = VALUES(description),
+      sub_description = VALUES(sub_description),
+      location_code = VALUES(location_code),
+      promo_code = VALUES(promo_code),
+      back_ordered = VALUES(back_ordered),
+      planogram_item = VALUES(planogram_item),
+      daily_sales = VALUES(daily_sales),
+      inventory = VALUES(inventory),
+      qty_on_po = VALUES(qty_on_po),
+      qty_on_so = VALUES(qty_on_so),
+      qty_in_ti = VALUES(qty_in_ti),
+      qty_in_to = VALUES(qty_in_to),
+      sales_31_60days = VALUES(sales_31_60days),
+      sales_30days = VALUES(sales_30days),
+      item_division_code = VALUES(item_division_code),
+      item_category_code = VALUES(item_category_code),
+      item_product_group_code = VALUES(item_product_group_code),
+      vendor_no = VALUES(vendor_no),
+      timestamp = VALUES(timestamp),
+      visible = VALUES(visible)
+  `;
+
+  const values = dataArray.map(row => [
+    row.item_no,
+    row.variant_code,
+    row.brand,
+    row.description,
+    row.sub_description,
+    row.location_code,
+    row.promo_code,
+    row.back_ordered,
+    row.planogram_item,
+    row.daily_sales,
+    row.inventory,
+    row.qty_on_po,
+    row.qty_on_so,
+    row.qty_in_ti,
+    row.qty_in_to,
+    row.sales_31_60days,
+    row.sales_30days,
+    row.item_division_code,
+    row.item_category_code,
+    row.item_product_group_code,
+    row.vendor_no,
+    row.timestamp,
+    row.visible
+  ]);
+
+  const promisePool = pool.promise();
+
+
+  const [result] = await promisePool.query(sql, [values]);
+  return result.affectedRows;
+}
+
 module.exports = {
   getReplenishData,
   log,
+  updateStoreData
 };
