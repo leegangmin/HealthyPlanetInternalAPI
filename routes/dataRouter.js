@@ -172,84 +172,40 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Get data from google sheet
-// router.post('/getReplenishData', async (req, res) => {
-//   // getReplenishData from Google
-//   let credentials;
-//   try {
-//     const keyPath = path.resolve(__dirname, 'google-sheets-key.json');
-//     credentials = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
-//   } catch (e) {
-//     console.warn(
-//       'google-sheets-key.json not found, trying environment variables...'
-//     );
-//     credentials = {
-//       type: process.env.DB_GOOGLE_ACCOUNT_TYPE,
-//       project_id: process.env.DB_GOOGLE_PROJECT_ID,
-//       private_key_id: process.env.DB_GOOGLE_PRIVATE_KEY_ID,
-//       private_key: process.env.DB_GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-//       client_email: process.env.DB_GOOGLE_CLIENT_EMAIL,
-//       client_id: process.env.DB_GOOGLE_CLIENT_ID,
-//       auth_uri: process.env.DB_GOOGLE_AUTH_URI,
-//       token_uri: process.env.DB_GOOGLE_TOKEN_URI,
-//       auth_provider_x509_cert_url:
-//         process.env.DB_GOOGLE_AUTH_PROVIDER_X509_CERT_URL,
-//       client_x509_cert_url: process.env.DB_GOOGLE_CLIENT_X509_CERT_URL,
-//       universe_domain: process.env.DB_GOOGLE_UNIVERSE_DOMAIN,
-//     };
 
-//     if (!credentials.private_key || !credentials.client_email) {
-//       console.error(
-//         'Failed to load Google credentials from file or environment variables.'
-//       );
-//       process.exit(1);
-//     }
-//   }
+router.post('/addRequestedSample', async (req, res) => {
 
-//   const auth = new google.auth.GoogleAuth({
-//     credentials,
-//     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-//   });
+  const { uid, items } = req.body
 
-//   const sheets = google.sheets({ version: 'v4', auth });
+  if (!uid || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ status_code: 400, message: 'Invalid request data' })
+  }
 
-//   const sheetId = process.env.DB_GOOGLE_SHEET_ID;
-//   const range = process.env.DB_GOOGLE_SHEET_RANGE;
+  try {
+    const result = await dataDBC.addRequestedSample(uid, items)
+    res.json({ status_code: 200, message: 'Request added', data: result })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ status_code: 500, message: err.message || 'Server error' })
+  }
+})
 
-//   if (!sheetId) {
-//     return res
-//       .status(500)
-//       .json({ error: 'Google Sheet ID is not configured.' });
-//   }
+router.post('/getRequestedSample', async (req, res) => {
 
-//   try {
-//     const response = await sheets.spreadsheets.values.get({
-//       spreadsheetId: sheetId,
-//       range: range,
-//     });
+  console.log(req)
 
-//     const rows = response.data.values;
-//     if (rows && rows.length) {
-//       const headers = rows[0];
-//       const data = rows.slice(1).map((row) => {
-//         let obj = {};
-//         headers.forEach((header, index) => {
-//           obj[header] = row[index];
-//         });
-//         return obj;
-//       });
-//       res.json(data);
-//     } else {
-//       res.json([]);
-//     }
-//   } catch (error) {
-//     console.error(
-//       'Error fetching data from Google Sheets API:',
-//       error.message,
-//       error.stack
-//     );
-//     res.status(500).json({ error: 'Failed to fetch data from Google Sheets.' });
-//   }
-// });
+  try {
+    const result = await dataDBC.getRequestedSample(req);
+    res.json({
+      status_code: 200,
+      data: result,
+    });
+  } catch (err) {
+    console.error('/getRequestedSample error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
+
 
 module.exports = router;

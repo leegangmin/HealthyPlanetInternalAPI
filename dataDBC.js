@@ -30,10 +30,10 @@ const getReplenishData = async (req) => {
     if (term === 'all') {
       const words = value.trim().split(/\s+/);
 
-      const numericWords = words.filter(w => /^\d+$/.test(w));
-      const nonNumericWords = words.filter(w => !/^\d+$/.test(w));
+      const numericWords = words.filter((w) => /^\d+$/.test(w));
+      const nonNumericWords = words.filter((w) => !/^\d+$/.test(w));
 
-      const booleanSearch = nonNumericWords.map(w => `+${w}*`).join(' ');
+      const booleanSearch = nonNumericWords.map((w) => `+${w}*`).join(' ');
 
       if (numericWords.length === 0) {
         if (booleanSearch.length === 0) {
@@ -50,11 +50,16 @@ const getReplenishData = async (req) => {
         );
         return rows;
       } else {
-        const fullTextCondition = booleanSearch.length > 0
-          ? `MATCH (${fullTextColumns.join(', ')}) AGAINST (? IN BOOLEAN MODE)`
-          : '1';
+        const fullTextCondition =
+          booleanSearch.length > 0
+            ? `MATCH (${fullTextColumns.join(
+                ', '
+              )}) AGAINST (? IN BOOLEAN MODE)`
+            : '1';
 
-        const likeConditions = numericWords.map(() => `item_no LIKE ?`).join(' AND ');
+        const likeConditions = numericWords
+          .map(() => `item_no LIKE ?`)
+          .join(' AND ');
 
         const sql = `
           SELECT * FROM store_data
@@ -66,7 +71,7 @@ const getReplenishData = async (req) => {
         if (booleanSearch.length > 0) {
           params.push(booleanSearch);
         }
-        numericWords.forEach(nw => {
+        numericWords.forEach((nw) => {
           params.push(`%${nw}`);
         });
 
@@ -145,7 +150,7 @@ async function updateStoreData(dataArray) {
       visible = VALUES(visible)
   `;
 
-  const values = dataArray.map(row => [
+  const values = dataArray.map((row) => [
     row.item_no,
     row.variant_code,
     row.brand,
@@ -168,18 +173,122 @@ async function updateStoreData(dataArray) {
     row.item_product_group_code,
     row.vendor_no,
     row.timestamp,
-    row.visible
+    row.visible,
   ]);
 
   const promisePool = pool.promise();
-
 
   const [result] = await promisePool.query(sql, [values]);
   return result.affectedRows;
 }
 
+const addRequestedSample = async (uid, items) => {
+  console.log('addRequestedSample in DBC', uid, items);
+
+  try {
+    const promisePool = pool.promise();
+
+    const values = [];
+    const placeholders = [];
+
+    items.forEach((item) => {
+      placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, NOW(), NULL, 1)');
+      values.push(
+        uid,
+        item.item_no || '', // item_no
+        item.variant_code || '', // variant_code
+        item.brand, // brand
+        item.description, // description
+        item.sub_description || '', // sub_description
+        item.reason || '', // reason
+        item.quantity || 1 // quantity
+      );
+    });
+
+    const sql = `INSERT INTO request_sample
+      (uid, item_no, variant_code, brand, description, sub_description, reason, quantity, requested_date, received_date, visible)
+      VALUES ${placeholders.join(', ')}`;
+
+    const [rows] = await promisePool.query(sql, values);
+    return rows;
+  } catch (err) {
+    console.error('addRequestedSample error:', err);
+    throw err;
+  }
+};
+
+const getRequestedSample = async (req) => {
+  const { uid } = req.body;
+  console.log('getRequestedSample uid:', uid);
+
+  try {
+    const promisePool = pool.promise();
+
+    let query = `
+      SELECT 
+        rs.uid,
+        u.name AS username,
+        rs.item_no,
+        rs.variant_code,
+        rs.brand,
+        rs.description,
+        rs.reason,
+        rs.quantity,
+        rs.requested_date,
+        rs.received_date
+      FROM request_sample rs
+      JOIN user u ON rs.uid = u.uid
+    `;
+    const params = [];
+
+    if (uid) {
+      query += ` WHERE rs.uid = ?`;
+      params.push(uid);
+    }
+
+    query += `
+      ORDER BY 
+        rs.received_date IS NOT NULL,
+        rs.uid,
+        rs.brand
+    `;
+
+    const [rows] = await promisePool.query(query, params);
+
+    const grouped = {};
+    rows.forEach((row) => {
+      if (!grouped[row.uid]) {
+        grouped[row.uid] = {
+          uid: row.uid,
+          username: row.username,
+          brands: {},
+        };
+      }
+      if (!grouped[row.uid].brands[row.brand]) {
+        grouped[row.uid].brands[row.brand] = [];
+      }
+      grouped[row.uid].brands[row.brand].push({
+        item_no: row.item_no,
+        variant_code: row.variant_code,
+        description: row.description,
+        reason: row.reason,
+        quantity: row.quantity,
+        requested_date: row.requested_date,
+        received_date: row.received_date,
+      });
+    });
+
+    return grouped;
+  } catch (err) {
+    console.error('getRequestedSamples error:', err);
+    throw err;
+  }
+};
+
 module.exports = {
   getReplenishData,
   log,
-  updateStoreData
+  updateStoreData,
+  addRequestedSample,
+  getRequestedSample,
 };
