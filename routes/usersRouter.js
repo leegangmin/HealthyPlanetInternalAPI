@@ -229,6 +229,35 @@ router.post('/signout', async (req, res) => {
   }
 });
 
+router.post('/updatePrivilege', async (req, res) => {
+
+  console.log(req.body)
+
+  try {
+    const { uid, privilege } = req.body;
+    const result = await userDBC.updatePrivilege(req.body);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, message: 'Failed to update privilege' });
+  }
+});
+
+router.post('/updateActive', async (req, res) => {
+  try {
+    const { uid, active } = req.body;
+    const result = await userDBC.updateActive(req.body);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, message: 'Failed to update active' });
+  }
+});
+
 router.post('/auth', authenticateToken, async (req, res) => {
   // const { id } = req.body;
   // console.log("authenticateToken Atoken", req.cookies.accessToken);
