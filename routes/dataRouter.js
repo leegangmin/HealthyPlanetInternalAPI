@@ -73,7 +73,7 @@ router.post('/log', async (req, res) => {
 
   try {
     const rows = await dataDBC.log(req.body);
-    res_get_replenish.status_code = 200;
+    res_get_log.status_code = 200;
     if (rows.length > 0) {
       res_get_log.data = rows;
     } else {
@@ -146,7 +146,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       const sanitizedRow = {};
       for (const key in row) {
         if (typeof row[key] === 'string') {
-          sanitizedRow[key] = row[key].replace(/'/g, "''");
+          // sanitizedRow[key] = row[key].replace(/'/g, "''");
         } else {
           sanitizedRow[key] = row[key];
         }
