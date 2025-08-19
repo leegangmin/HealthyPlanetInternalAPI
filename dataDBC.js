@@ -285,10 +285,42 @@ const getRequestedSample = async (req) => {
   }
 };
 
+const updateSampleStatus = async (uid, item_no, variant_code, status) => {
+
+  console.log("__________________", uid, item_no, variant_code, status)
+
+  try {
+    const promisePool = pool.promise();
+    let query, values;
+
+    if (status === 'received') {
+      query = `
+        UPDATE request_sample 
+        SET received_date = NOW()
+        WHERE uid = ? AND item_no = ? AND variant_code = ?`;
+      values = [uid, item_no, variant_code];
+    } else if (status === 'pending') {
+      query = `
+        UPDATE request_sample 
+        SET received_date = NULL
+        WHERE uid = ? AND item_no = ? AND variant_code = ?`;
+      values = [uid, item_no, variant_code];
+    } else {
+      throw new Error('Invalid status');
+    }
+
+    const [result] = await promisePool.query(query, values);
+    return result;
+  } catch (err) {
+    console.error('updateSampleStatus error:', err);
+    throw err;
+  }
+};
+
 module.exports = {
   getReplenishData,
   log,
   updateStoreData,
   addRequestedSample,
-  getRequestedSample,
+  getRequestedSample,updateSampleStatus
 };

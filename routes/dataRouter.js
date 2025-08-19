@@ -146,7 +146,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       const sanitizedRow = {};
       for (const key in row) {
         if (typeof row[key] === 'string') {
-          // sanitizedRow[key] = row[key].replace(/'/g, "''");
+          sanitizedRow[key] = row[key].replace(/'/g, "''");
         } else {
           sanitizedRow[key] = row[key];
         }
@@ -192,7 +192,6 @@ router.post('/addRequestedSample', async (req, res) => {
 
 router.post('/getRequestedSample', async (req, res) => {
 
-  console.log(req)
 
   try {
     const result = await dataDBC.getRequestedSample(req);
@@ -202,6 +201,18 @@ router.post('/getRequestedSample', async (req, res) => {
     });
   } catch (err) {
     console.error('/getRequestedSample error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
+router.post('/updateSampleStatus', async (req, res) => {
+
+  try {
+    const { uid, item_no, variant_code, status } = req.body;
+    const result = await dataDBC.updateSampleStatus(uid, item_no, variant_code, status);
+    res.json({ status_code: 200, message: 'Status updated', result });
+  } catch (err) {
+    console.error('/updateSampleStatus error:', err.message);
     res.status(500).json({ status_code: 500, error: err.message });
   }
 });
