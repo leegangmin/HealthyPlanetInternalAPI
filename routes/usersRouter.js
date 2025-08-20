@@ -14,25 +14,21 @@ app.use(bodyParser.json());
 app.use(cookieParser());
 
 //verify token
-const authenticateToken = (req, res, next) => {
-  const refreshToken = req.cookies.refreshToken;
-  // console.log("authenticateToken req", req);
-  // console.log("authenticateToken Atoken", req.cookies.accessToken);
-  // console.log("authenticateToken Rtoken", req.cookies.refreshToken);
+const verifyAccessToken = (req, res, next) => {
+  const token = req.cookies.accessToken;
 
-  if (refreshToken == null) return res.sendStatus(401);
-
-  jwt.verify(refreshToken, SECRET_KEY, (err, user) => {
-    // console.log('req.user', req.user);
-    // console.log('user', user);
-    if (err) return res.sendStatus(403);
-    req.user = user;
+  if (!token) return res.status(403).json({ message: 'No token' });
+  try {
+    const decoded = jwt.verify(token, SECRET_KEY);
+    req.user = decoded;
     next();
-  });
+  } catch (err) {
+    return res.status(403).json({ message: 'Token expired or invalid' });
+  }
 };
 
 // get user lists
-router.post('/getMembers', async (req, res) => {
+router.post('/getMembers', verifyAccessToken, async (req, res) => {
   let res_get_members = {
     status_code: 500,
     data: [],
@@ -164,17 +160,19 @@ router.post('/signin', async (req, res) => {
   } finally {
     const resultData = result;
 
-    console.log('signin', result);
+    console.log('signin', rows);
+    console.log('signin', rows[0]);
+    console.log('signin', rows[0].id);
 
     if (rows.length > 0) {
       // if (rows.length > 0 && rows[0].pw == req.body.pw) {
       delete rows[0]['pw'];
 
       result.user = rows[0];
-      const accessToken = jwt.sign({ id: user.id }, SECRET_KEY, {
+      const accessToken = jwt.sign({ id: rows[0].id }, SECRET_KEY, {
         expiresIn: '30m',
       });
-      const refreshToken = jwt.sign({ id: user.id }, SECRET_KEY, {
+      const refreshToken = jwt.sign({ id: rows[0].id }, SECRET_KEY, {
         expiresIn: '2h',
       });
 
@@ -232,7 +230,7 @@ router.post('/signout', async (req, res) => {
   }
 });
 
-router.post('/updatePrivilege', async (req, res) => {
+router.post('/updatePrivilege', verifyAccessToken, async (req, res) => {
   console.log(req.body);
 
   try {
@@ -247,7 +245,7 @@ router.post('/updatePrivilege', async (req, res) => {
   }
 });
 
-router.post('/updateActive', async (req, res) => {
+router.post('/updateActive', verifyAccessToken, async (req, res) => {
   try {
     const { uid, active } = req.body;
     const result = await userDBC.updateActive(req.body);
@@ -263,8 +261,7 @@ router.post('/updateActive', async (req, res) => {
 router.post('/auth', (req, res) => {
   const refreshToken = req.cookies.refreshToken;
 
-  console.log('signin', refreshToken);
-
+  console.log('auth', refreshToken);
 
   if (!refreshToken)
     return res.status(401).json({ message: 'No refresh token' });
@@ -275,13 +272,13 @@ router.post('/auth', (req, res) => {
       expiresIn: '30m',
     });
 
-    console.log("decoded.exp", decoded.exp)
+    console.log('decoded.exp', decoded.exp);
 
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
       secure: false,
       sameSite: 'strict',
-      maxAge: 30 * 60 * 1000 ,
+      maxAge: 30 * 60 * 1000,
     });
 
     res.json({ message: 'Access token refreshed' });
