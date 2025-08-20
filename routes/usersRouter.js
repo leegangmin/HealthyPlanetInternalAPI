@@ -164,28 +164,31 @@ router.post('/signin', async (req, res) => {
   } finally {
     const resultData = result;
 
+    console.log('signin', result);
+
     if (rows.length > 0) {
       // if (rows.length > 0 && rows[0].pw == req.body.pw) {
       delete rows[0]['pw'];
 
       result.user = rows[0];
-      const accessToken = jwt.sign({ rows }, SECRET_KEY, { expiresIn: '2h' });
-      const refreshToken = jwt.sign({ id }, SECRET_KEY, { expiresIn: '12h' });
+      const accessToken = jwt.sign({ id: user.id }, SECRET_KEY, {
+        expiresIn: '30m',
+      });
+      const refreshToken = jwt.sign({ id: user.id }, SECRET_KEY, {
+        expiresIn: '2h',
+      });
 
       res.cookie('accessToken', accessToken, {
         httpOnly: true,
-        secure: true,
+        secure: false,
         sameSite: 'strict',
-        domain: '.gangminlee.com',
-        maxAge: 2 * 60 * 60 * 1000, // 2hrs
+        maxAge: 30 * 60 * 1000,
       });
-
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
-        secure: true,
+        secure: false,
         sameSite: 'strict',
-        domain: '.gangminlee.com',
-        maxAge: 12 * 60 * 60 * 1000, // 12hrs
+        maxAge: 2 * 60 * 60 * 1000,
       });
 
       return res.json({ resultData });
@@ -230,8 +233,7 @@ router.post('/signout', async (req, res) => {
 });
 
 router.post('/updatePrivilege', async (req, res) => {
-
-  console.log(req.body)
+  console.log(req.body);
 
   try {
     const { uid, privilege } = req.body;
@@ -258,60 +260,33 @@ router.post('/updateActive', async (req, res) => {
   }
 });
 
-router.post('/auth', authenticateToken, async (req, res) => {
-  // const { id } = req.body;
-  // console.log("authenticateToken Atoken", req.cookies.accessToken);
-  // console.log("authenticateToken Rtoken", req.cookies.refreshToken);
+router.post('/auth', (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
 
-  console.log('req.body', req.body);
-  console.log('req.user', req.user);
-  // console.log(jwt.verify(req.cookies.refreshToken, SECRET_KEY));
-  // console.log(jwt.verify(req.cookies.accessToken, SECRET_KEY));
+  console.log('signin', refreshToken);
 
-  // console.log("router.post('/auth', authenticateToken, async (req, res) => {", req)
 
-  let result = {
-    message: true,
-    user: [],
-  };
+  if (!refreshToken)
+    return res.status(401).json({ message: 'No refresh token' });
 
   try {
-    rows = await userDBC.getAccess(req.user);
-  } catch (error) {
-    console.log(error.message);
-  } finally {
-    const resultData = result;
+    const decoded = jwt.verify(refreshToken, SECRET_KEY);
+    const newAccessToken = jwt.sign({ id: decoded.id }, SECRET_KEY, {
+      expiresIn: '30m',
+    });
 
-    if (rows.length > 0 && rows[0].id == req.user.id) {
-      delete rows[0]['pw'];
+    console.log("decoded.exp", decoded.exp)
 
-      result.user = rows[0];
+    res.cookie('accessToken', newAccessToken, {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'strict',
+      maxAge: 30 * 60 * 1000 ,
+    });
 
-      const id = req.user.id;
-      const accessToken = jwt.sign({ rows }, SECRET_KEY, { expiresIn: '2h' });
-      const refreshToken = jwt.sign({ id }, SECRET_KEY, { expiresIn: '12h' });
-
-      res.cookie('accessToken', accessToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'strict',
-        domain: '.gangminlee.com',
-        maxAge: 2 * 60 * 60 * 1000, // 2hrs
-      });
-
-      res.cookie('refreshToken', refreshToken, {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'strict',
-        domain: '.gangminlee.com',
-        maxAge: 12 * 60 * 60 * 1000, // 12hrs
-      });
-
-      return res.json({ resultData });
-    } else {
-      result.message = false;
-      return res.json({ resultData });
-    }
+    res.json({ message: 'Access token refreshed' });
+  } catch {
+    res.status(403).json({ message: 'Invalid refresh token' });
   }
 });
 
