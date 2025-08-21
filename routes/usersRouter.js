@@ -160,10 +160,6 @@ router.post('/signin', async (req, res) => {
   } finally {
     const resultData = result;
 
-    console.log('signin', rows);
-    console.log('signin', rows[0]);
-    console.log('signin', rows[0].id);
-
     if (rows.length > 0) {
       // if (rows.length > 0 && rows[0].pw == req.body.pw) {
       delete rows[0]['pw'];
