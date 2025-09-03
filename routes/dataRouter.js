@@ -224,4 +224,15 @@ router.post('/updateSampleStatus', verifyAccessToken, async (req, res) => {
   }
 });
 
+router.post('/tooGoodToGo', async (req, res) => {
+  console.log("Router", req.body)
+  try {
+    const result = await dataDBC.addTooGoodToGo(req.body)
+    res.json({ status_code: 200, affected_rows: result })
+  } catch (err) {
+    console.error('/tooGoodToGo error:', err.message)
+    res.status(500).json({ status_code: 500, error: err.message })
+  }
+})
+
 module.exports = router;

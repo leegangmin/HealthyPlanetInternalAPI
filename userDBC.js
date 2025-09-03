@@ -69,7 +69,7 @@ const reset = async (req) => {
 const getMembers = async (req) => {
   const privilege = req.privilege;
 
-  console.log(privilege)
+  // console.log(privilege)
 
   if (privilege%100 > 3) {
     return null;
@@ -98,7 +98,7 @@ const getMembers = async (req) => {
 };
 
 const updatePrivilege = async (req) => {
-  console.log('REQ', req);
+  // console.log('REQ', req);
   await promisePool.query(
     'UPDATE user SET privilege = ?, updated_at = NOW() WHERE uid = ?',
     [req.privilege, req.uid]
@@ -106,7 +106,7 @@ const updatePrivilege = async (req) => {
 };
 
 const updateActive = async (req) => {
-  console.log('REQ', req);
+  // console.log('REQ', req);
   await promisePool.query(
     'UPDATE user SET active = ?, updated_at = NOW() WHERE uid = ?',
     [req.active ? 1 : 0, req.uid]

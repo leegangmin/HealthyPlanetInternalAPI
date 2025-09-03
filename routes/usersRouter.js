@@ -53,7 +53,7 @@ router.post('/getMembers', verifyAccessToken, async (req, res) => {
 
 // get user active info
 router.post('/active', async (req, res) => {
-  console.log(req.body);
+  // console.log(req.body);
 
   let res_get_active = {
     status_code: 500,
@@ -63,7 +63,7 @@ router.post('/active', async (req, res) => {
 
   try {
     const rows = await userDBC.getActive(req.body);
-    console.log(rows);
+    // console.log(rows);
     res_get_active.status_code = 200;
     if (rows !== null) {
       res_get_active.active = rows.active;
@@ -107,7 +107,7 @@ router.post('/reset', async (req, res) => {
 
 // join user
 router.post('/signup', async (req, res) => {
-  console.log('/signup', req.body);
+  // console.log('/signup', req.body);
 
   let res_join_users = {
     status_code: 500,
@@ -227,7 +227,7 @@ router.post('/signout', async (req, res) => {
 });
 
 router.post('/updatePrivilege', verifyAccessToken, async (req, res) => {
-  console.log(req.body);
+  // console.log(req.body);
 
   try {
     const { uid, privilege } = req.body;
@@ -257,7 +257,7 @@ router.post('/updateActive', verifyAccessToken, async (req, res) => {
 router.post('/auth', (req, res) => {
   const refreshToken = req.cookies.refreshToken;
 
-  console.log('auth', refreshToken);
+  // console.log('auth', refreshToken);
 
   if (!refreshToken)
     return res.status(401).json({ message: 'No refresh token' });
@@ -268,7 +268,7 @@ router.post('/auth', (req, res) => {
       expiresIn: '30m',
     });
 
-    console.log('decoded.exp', decoded.exp);
+    // console.log('decoded.exp', decoded.exp);
 
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,

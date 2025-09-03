@@ -22,10 +22,11 @@ const fullTextColumns = [
   'vendor_no',
 ];
 
+const promisePool = pool.promise();
+
 const getReplenishData = async (req) => {
   try {
     const { term, value } = req;
-    const promisePool = pool.promise();
 
     if (term === 'all') {
       const words = value.trim().split(/\s+/);
@@ -103,7 +104,6 @@ const getReplenishData = async (req) => {
 
 const log = async (req) => {
   try {
-    const promisePool = pool.promise();
     const { uid, type, detail, ip, user_agent } = req;
     const [rows] = await promisePool.query(
       `INSERT INTO log (uid, type, detail, timestamp, ip, user_agent) VALUES (?, ?, ?, NOW(), ?, ?)`,
@@ -176,8 +176,6 @@ async function updateStoreData(dataArray) {
     row.visible,
   ]);
 
-  const promisePool = pool.promise();
-
   const [result] = await promisePool.query(sql, [values]);
   return result.affectedRows;
 }
@@ -186,8 +184,6 @@ const addRequestedSample = async (uid, items) => {
   console.log('addRequestedSample in DBC', uid, items);
 
   try {
-    const promisePool = pool.promise();
-
     const values = [];
     const placeholders = [];
 
@@ -222,8 +218,6 @@ const getRequestedSample = async (req) => {
   console.log('getRequestedSample uid:', uid);
 
   try {
-    const promisePool = pool.promise();
-
     let query = `
       SELECT 
         rs.uid,
@@ -286,11 +280,9 @@ const getRequestedSample = async (req) => {
 };
 
 const updateSampleStatus = async (uid, item_no, variant_code, status) => {
-
-  console.log("__________________", uid, item_no, variant_code, status)
+  console.log('__________________', uid, item_no, variant_code, status);
 
   try {
-    const promisePool = pool.promise();
     let query, values;
 
     if (status === 'received') {
@@ -317,10 +309,29 @@ const updateSampleStatus = async (uid, item_no, variant_code, status) => {
   }
 };
 
+const addTooGoodToGo = async (data) => {
+  const { uid, bag_no, bag_type, receipt_no, collected_time } = data;
+
+  console.log("DBC", data)
+
+  if (!collected_time) {
+    throw new Error('collected_time is required');
+  }
+
+  const [result] = await promisePool.query(
+    `INSERT INTO too_good_to_go (uid, bag_no, bag_type, receipt_no, collected_time) VALUES (?, ?, ?, ?, ?)`,
+    [uid, bag_no, bag_type, receipt_no, collected_time]
+  );
+
+  return result.affectedRows;
+};
+
 module.exports = {
   getReplenishData,
   log,
   updateStoreData,
   addRequestedSample,
-  getRequestedSample,updateSampleStatus
+  getRequestedSample,
+  updateSampleStatus,
+  addTooGoodToGo,
 };
