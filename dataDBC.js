@@ -330,7 +330,7 @@ const addTooGoodToGo = async (data) => {
 const getSaleTagList = async () => {
   try {
     const [rows] = await promisePool.query(
-      `SELECT * FROM sale_tag ORDER BY id DESC`
+      `SELECT * FROM sale_tag WHERE visible = 1 ORDER BY stid DESC`
     );
     return rows;
   } catch (err) {
@@ -340,16 +340,16 @@ const getSaleTagList = async () => {
 };
 
 const createSaleTag = async (data) => {
-  const { brand, sale_item, discount, location, tag_type, tag_count, notes, end_date } = data;
+  const { uid, brand, sale_item, discount, location, tag_type, tag_count, notes, end_date } = data;
 
-  if (!brand || !sale_item || !discount || !location || !tag_type || !tag_count || !end_date) {
+  if (!uid || !discount || !location || !tag_count) {
     throw new Error('Required fields are missing');
   }
 
   const [result] = await promisePool.query(
-    `INSERT INTO sale_tag (brand, sale_item, discount, location, tag_type, tag_count, notes, end_date, created_at, updated_at) 
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-    [brand, sale_item, discount, location, tag_type, tag_count, notes || null, end_date]
+    `INSERT INTO sale_tag (uid, brand, description, discount, location, tag_type, tag_count, note, sale_end_date, visible) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    [uid, brand || null, sale_item || null, discount, location, tag_type || null, tag_count, notes || null, end_date || null]
   );
 
   return result.affectedRows;
@@ -362,15 +362,15 @@ const updateSaleTag = async (data) => {
     throw new Error('ID is required for update');
   }
 
-  if (!brand || !sale_item || !discount || !location || !tag_type || !tag_count || !end_date) {
+  if (!discount || !location || !tag_count) {
     throw new Error('Required fields are missing');
   }
 
   const [result] = await promisePool.query(
     `UPDATE sale_tag 
-     SET brand = ?, sale_item = ?, discount = ?, location = ?, tag_type = ?, tag_count = ?, notes = ?, end_date = ?, updated_at = NOW()
-     WHERE id = ?`,
-    [brand, sale_item, discount, location, tag_type, tag_count, notes || null, end_date, id]
+     SET brand = ?, description = ?, discount = ?, location = ?, tag_type = ?, tag_count = ?, note = ?, sale_end_date = ?
+     WHERE stid = ?`,
+    [brand || null, sale_item || null, discount, location, tag_type || null, tag_count, notes || null, end_date || null, id]
   );
 
   return result.affectedRows;
@@ -383,8 +383,9 @@ const deleteSaleTag = async (data) => {
     throw new Error('ID is required for delete');
   }
 
+  // Soft delete by setting visible to 0
   const [result] = await promisePool.query(
-    `DELETE FROM sale_tag WHERE id = ?`,
+    `UPDATE sale_tag SET visible = 0 WHERE stid = ?`,
     [id]
   );
 
