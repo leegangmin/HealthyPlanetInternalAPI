@@ -326,6 +326,71 @@ const addTooGoodToGo = async (data) => {
   return result.affectedRows;
 };
 
+// Sale Tag functions
+const getSaleTagList = async () => {
+  try {
+    const [rows] = await promisePool.query(
+      `SELECT * FROM sale_tag ORDER BY id DESC`
+    );
+    return rows;
+  } catch (err) {
+    console.error('getSaleTagList error:', err);
+    throw err;
+  }
+};
+
+const createSaleTag = async (data) => {
+  const { brand, sale_item, discount, location, tag_type, tag_count, notes, end_date } = data;
+
+  if (!brand || !sale_item || !discount || !location || !tag_type || !tag_count || !end_date) {
+    throw new Error('Required fields are missing');
+  }
+
+  const [result] = await promisePool.query(
+    `INSERT INTO sale_tag (brand, sale_item, discount, location, tag_type, tag_count, notes, end_date, created_at, updated_at) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+    [brand, sale_item, discount, location, tag_type, tag_count, notes || null, end_date]
+  );
+
+  return result.affectedRows;
+};
+
+const updateSaleTag = async (data) => {
+  const { id, brand, sale_item, discount, location, tag_type, tag_count, notes, end_date } = data;
+
+  if (!id) {
+    throw new Error('ID is required for update');
+  }
+
+  if (!brand || !sale_item || !discount || !location || !tag_type || !tag_count || !end_date) {
+    throw new Error('Required fields are missing');
+  }
+
+  const [result] = await promisePool.query(
+    `UPDATE sale_tag 
+     SET brand = ?, sale_item = ?, discount = ?, location = ?, tag_type = ?, tag_count = ?, notes = ?, end_date = ?, updated_at = NOW()
+     WHERE id = ?`,
+    [brand, sale_item, discount, location, tag_type, tag_count, notes || null, end_date, id]
+  );
+
+  return result.affectedRows;
+};
+
+const deleteSaleTag = async (data) => {
+  const { id } = data;
+
+  if (!id) {
+    throw new Error('ID is required for delete');
+  }
+
+  const [result] = await promisePool.query(
+    `DELETE FROM sale_tag WHERE id = ?`,
+    [id]
+  );
+
+  return result.affectedRows;
+};
+
 module.exports = {
   getReplenishData,
   log,
@@ -334,4 +399,8 @@ module.exports = {
   getRequestedSample,
   updateSampleStatus,
   addTooGoodToGo,
+  getSaleTagList,
+  createSaleTag,
+  updateSaleTag,
+  deleteSaleTag,
 };
