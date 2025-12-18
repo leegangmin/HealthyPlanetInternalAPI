@@ -235,4 +235,48 @@ router.post('/tooGoodToGo', async (req, res) => {
   }
 })
 
+// Sale Tag routes
+router.post('/saleTag/list', verifyAccessToken, async (req, res) => {
+  try {
+    const result = await dataDBC.getSaleTagList();
+    res.json({ status_code: 200, data: result });
+  } catch (err) {
+    console.error('/saleTag/list error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
+router.post('/saleTag/create', verifyAccessToken, async (req, res) => {
+  console.log('/saleTag/create', req.body);
+  try {
+    const result = await dataDBC.createSaleTag(req.body);
+    res.json({ status_code: 200, affected_rows: result });
+  } catch (err) {
+    console.error('/saleTag/create error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
+router.post('/saleTag/update', verifyAccessToken, async (req, res) => {
+  console.log('/saleTag/update', req.body);
+  try {
+    const result = await dataDBC.updateSaleTag(req.body);
+    res.json({ status_code: 200, affected_rows: result });
+  } catch (err) {
+    console.error('/saleTag/update error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
+router.post('/saleTag/delete', verifyAccessToken, async (req, res) => {
+  console.log('/saleTag/delete', req.body);
+  try {
+    const result = await dataDBC.deleteSaleTag(req.body);
+    res.json({ status_code: 200, affected_rows: result });
+  } catch (err) {
+    console.error('/saleTag/delete error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
 module.exports = router;
