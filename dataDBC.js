@@ -392,6 +392,283 @@ const deleteSaleTag = async (data) => {
   return result.affectedRows;
 };
 
+const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
+  try {
+    let totalUpdated = 0;
+
+    for (const row of excelData) {
+      // Get Brand - priority order:
+      // 1. Exact column name "Brand"
+      // 2. Column containing "ad outline" (e.g., " January 2026 Ad Outline")
+      let brand = null;
+      // Try exact column name first
+      if (row.hasOwnProperty('Brand') && row['Brand'] != null && row['Brand'] !== '') {
+        brand = String(row['Brand']).trim();
+      } else if (row.hasOwnProperty('brand') && row['brand'] != null && row['brand'] !== '') {
+        brand = String(row['brand']).trim();
+      } else {
+        // Try "ad outline" pattern (this is the actual Brand column in the Excel file)
+        for (const key of Object.keys(row)) {
+          if (key && key.toLowerCase().includes('ad outline')) {
+            const value = row[key];
+            // Make sure it's not a number (Sale Price is in date columns)
+            if (typeof value !== 'number') {
+              brand = String(value).trim();
+              break;
+            }
+          }
+        }
+      }
+
+      // Get Item Name / Description - priority order:
+      // 1. Exact column name "Item Name" or "Description"
+      // 2. __EMPTY (first empty column, which is Item Name in this Excel format)
+      let itemName = null;
+      // Try exact column names first
+      if (row.hasOwnProperty('Item Name') && row['Item Name'] != null && row['Item Name'] !== '') {
+        itemName = String(row['Item Name']).trim();
+      } else if (row.hasOwnProperty('item name') && row['item name'] != null && row['item name'] !== '') {
+        itemName = String(row['item name']).trim();
+      } else if (row.hasOwnProperty('Description') && row['Description'] != null && row['Description'] !== '') {
+        itemName = String(row['Description']).trim();
+      } else if (row.hasOwnProperty('description') && row['description'] != null && row['description'] !== '') {
+        itemName = String(row['description']).trim();
+      } else {
+        // Try __EMPTY (this is the actual Item Name column in the Excel file)
+        if (row.hasOwnProperty('__EMPTY') && row['__EMPTY'] != null && row['__EMPTY'] !== '') {
+          itemName = String(row['__EMPTY']).trim();
+        }
+      }
+
+      // Get Sale Price / Discount - priority order:
+      // 1. Exact column name "Sale Price" or "Price" or "Discount"
+      // 2. Date-like columns (e.g., "January 8 - February 4 2026") containing numeric values
+      // IMPORTANT: Do NOT use "ad outline" column for Sale Price
+      let salePrice = null;
+      // Try exact column names first
+      if (row.hasOwnProperty('Sale Price') && row['Sale Price'] != null && row['Sale Price'] !== '') {
+        const value = row['Sale Price'];
+        salePrice = typeof value === 'number' ? String(value) : String(value).trim();
+        console.log(`Found Sale Price from exact column "Sale Price": "${salePrice}"`);
+      } else if (row.hasOwnProperty('sale price') && row['sale price'] != null && row['sale price'] !== '') {
+        const value = row['sale price'];
+        salePrice = typeof value === 'number' ? String(value) : String(value).trim();
+        console.log(`Found Sale Price from exact column "sale price": "${salePrice}"`);
+      } else if (row.hasOwnProperty('Price') && row['Price'] != null && row['Price'] !== '') {
+        const value = row['Price'];
+        salePrice = typeof value === 'number' ? String(value) : String(value).trim();
+        console.log(`Found Sale Price from exact column "Price": "${salePrice}"`);
+      } else if (row.hasOwnProperty('Discount') && row['Discount'] != null && row['Discount'] !== '') {
+        const value = row['Discount'];
+        salePrice = typeof value === 'number' ? String(value) : String(value).trim();
+        console.log(`Found Sale Price from exact column "Discount": "${salePrice}"`);
+      } else {
+        // Try date-like columns (e.g., "January 8 - February 4 2026") - these contain the discount percentage
+        // But exclude "ad outline" columns
+        for (const key of Object.keys(row)) {
+          // Skip "ad outline" columns - these are Brand columns, not Sale Price
+          if (key && key.toLowerCase().includes('ad outline')) {
+            continue;
+          }
+          
+          // Look for date-like columns (containing year)
+          if (key && (key.includes('2026') || key.includes('2025') || key.includes('2024'))) {
+            const value = row[key];
+            
+            // First check if it's a string (could be "Buy 1 Get 2nd 50%", "20% OFF", etc.)
+            if (typeof value === 'string' && value.trim()) {
+              // Use the string value directly as Sale Price
+              salePrice = value.trim();
+              console.log(`Found Sale Price from date column "${key}": "${salePrice}" (string value)`);
+              break;
+            } else if (typeof value === 'number') {
+              if (value > 0 && value <= 1) {
+                // Likely a percentage (0.2 = 20%)
+                salePrice = `${(value * 100).toFixed(0)}% OFF`;
+                console.log(`Found Sale Price from date column "${key}": "${salePrice}" (from numeric value: ${value})`);
+                break;
+              } else if (value > 1) {
+                // Likely a price
+                salePrice = String(value);
+                console.log(`Found Sale Price from date column "${key}": "${salePrice}" (from numeric value: ${value})`);
+                break;
+              }
+            }
+          }
+        }
+      }
+      
+      // Final validation: salePrice should not be the same as brand or itemName
+      if (salePrice && (String(salePrice).trim() === String(brand).trim() || String(salePrice).trim() === String(itemName).trim())) {
+        console.error(`ERROR: salePrice is incorrectly set to brand or itemName! salePrice: "${salePrice}", brand: "${brand}", itemName: "${itemName}"`);
+        salePrice = null;
+      }
+
+      if (!brand || !itemName || !salePrice) {
+        console.log('Skipping row - missing required fields:', {
+          brand,
+          itemName,
+          salePrice,
+          row
+        });
+        continue;
+      }
+
+      // Normalize brand and itemName for matching (trim, lowercase, remove extra spaces, normalize special characters)
+      const normalizedBrand = (brand || '').toString().trim().replace(/\s+/g, ' ').replace(/['"]/g, "'");
+      const normalizedItemName = (itemName || '').toString().trim().replace(/\s+/g, ' ').replace(/['"]/g, "'");
+
+      console.log(`Attempting to match - Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`);
+      console.log(`Brand length: ${normalizedBrand.length}, Item length: ${normalizedItemName.length}`);
+
+      // Only use exact match (case-insensitive, trimmed, normalized spaces)
+      // Normalize multiple spaces in database values
+      const [matchingTags] = await promisePool.query(
+        `SELECT stid, brand, description FROM sale_tag 
+         WHERE LOWER(TRIM(REPLACE(brand, '  ', ' '))) = LOWER(?) 
+         AND LOWER(TRIM(REPLACE(description, '  ', ' '))) = LOWER(?) 
+         AND visible = 1`,
+        [normalizedBrand, normalizedItemName]
+      );
+      
+      // If no match, try to find what's actually in the database for debugging
+      if (matchingTags.length === 0) {
+        const [dbBrands] = await promisePool.query(
+          `SELECT DISTINCT brand FROM sale_tag 
+           WHERE LOWER(TRIM(REPLACE(brand, '  ', ' '))) LIKE LOWER(?) 
+           AND visible = 1 LIMIT 5`,
+          [`%${normalizedBrand.substring(0, Math.min(20, normalizedBrand.length))}%`]
+        );
+        const [dbItems] = await promisePool.query(
+          `SELECT DISTINCT description FROM sale_tag 
+           WHERE LOWER(TRIM(REPLACE(description, '  ', ' '))) LIKE LOWER(?) 
+           AND visible = 1 LIMIT 5`,
+          [`%${normalizedItemName.substring(0, Math.min(30, normalizedItemName.length))}%`]
+        );
+        console.log(`No exact match found. Searching for similar entries:`);
+        console.log(`DB Brands containing "${normalizedBrand.substring(0, 20)}":`, dbBrands.map(b => `"${b.brand}"`));
+        console.log(`DB Items containing "${normalizedItemName.substring(0, 30)}":`, dbItems.map(i => `"${i.description}"`));
+        
+        // Also try to find exact matches with different normalization
+        const [exactBrandMatch] = await promisePool.query(
+          `SELECT stid, brand, description FROM sale_tag 
+           WHERE brand = ? AND visible = 1 LIMIT 1`,
+          [brand]
+        );
+        const [exactItemMatch] = await promisePool.query(
+          `SELECT stid, brand, description FROM sale_tag 
+           WHERE description = ? AND visible = 1 LIMIT 1`,
+          [itemName]
+        );
+        if (exactBrandMatch.length > 0) {
+          console.log(`Found exact brand match (case-sensitive): "${exactBrandMatch[0].brand}"`);
+        }
+        if (exactItemMatch.length > 0) {
+          console.log(`Found exact item match (case-sensitive): "${exactItemMatch[0].description}"`);
+        }
+      }
+
+      if (matchingTags.length === 0) {
+        console.log(
+          `No matching tags found for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
+        );
+        // Try to find similar entries for debugging
+        const brandSearchTerm = normalizedBrand.length >= 3 ? normalizedBrand.substring(0, Math.min(10, normalizedBrand.length)) : normalizedBrand;
+        const itemSearchTerm = normalizedItemName.length >= 5 ? normalizedItemName.substring(0, Math.min(10, normalizedItemName.length)) : normalizedItemName;
+        
+        const [similarBrands] = await promisePool.query(
+          `SELECT DISTINCT brand FROM sale_tag WHERE LOWER(TRIM(brand)) LIKE LOWER(?) AND visible = 1 LIMIT 10`,
+          [`%${brandSearchTerm}%`]
+        );
+        const [similarItems] = await promisePool.query(
+          `SELECT DISTINCT description FROM sale_tag WHERE LOWER(TRIM(description)) LIKE LOWER(?) AND visible = 1 LIMIT 10`,
+          [`%${itemSearchTerm}%`]
+        );
+        console.log(`Looking for Brand: "${normalizedBrand}"`);
+        console.log(`Similar brands found (${similarBrands.length}):`, similarBrands.map(b => b.brand));
+        console.log(`Looking for Item: "${normalizedItemName}"`);
+        console.log(`Similar items found (${similarItems.length}):`, similarItems.map(i => i.description));
+        continue;
+      }
+
+      console.log(
+        `Found ${matchingTags.length} matching tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
+      );
+      if (matchingTags.length > 0) {
+        console.log(`Matched tags:`, matchingTags.map(t => ({ stid: t.stid, brand: t.brand, description: t.description })));
+      }
+
+      console.log(
+        `Found ${matchingTags.length} matching tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
+      );
+
+      // Ensure endDate is in YYYY-MM-DD format (parse as local date, not UTC)
+      let formattedEndDate = endDate;
+      if (typeof endDate === 'string' && endDate.length > 0) {
+        // If it's already in YYYY-MM-DD format, use as is
+        if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+          formattedEndDate = endDate;
+        } else {
+          // Try to parse and reformat - use local timezone to avoid day shift
+          const dateMatch = endDate.match(/(\d{4})-(\d{2})-(\d{2})/);
+          if (dateMatch) {
+            // Direct extraction from string to avoid timezone conversion
+            formattedEndDate = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+          } else {
+            // Fallback to Date parsing but use local components
+            const dateObj = new Date(endDate);
+            if (!isNaN(dateObj.getTime())) {
+              // Use local date components to avoid UTC conversion
+              const year = dateObj.getFullYear();
+              const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+              const day = String(dateObj.getDate()).padStart(2, '0');
+              formattedEndDate = `${year}-${month}-${day}`;
+            }
+          }
+        }
+      }
+      
+      console.log(`Updating with Sale Price: "${salePrice}", endDate: "${formattedEndDate}" for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`);
+
+      // Validate salePrice before updating
+      if (!salePrice || salePrice === normalizedBrand || salePrice === normalizedItemName) {
+        console.error(`ERROR: Invalid salePrice value! salePrice: "${salePrice}", brand: "${normalizedBrand}", itemName: "${normalizedItemName}"`);
+        continue;
+      }
+
+      if (applyToAll) {
+        // Update all matching tags - use normalized values for WHERE clause
+        // Update discount (Sale Price) and sale_end_date
+        const [result] = await promisePool.query(
+          `UPDATE sale_tag 
+           SET discount = ?, sale_end_date = ?
+           WHERE LOWER(TRIM(REPLACE(brand, '  ', ' '))) = LOWER(?) 
+           AND LOWER(TRIM(REPLACE(description, '  ', ' '))) = LOWER(?) 
+           AND visible = 1`,
+          [salePrice, formattedEndDate, normalizedBrand, normalizedItemName]
+        );
+        totalUpdated += result.affectedRows;
+        console.log(`Updated ${result.affectedRows} tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}" with Sale Price: "${salePrice}", date: "${formattedEndDate}"`);
+      } else {
+        // Update only the first matching tag
+        const [result] = await promisePool.query(
+          `UPDATE sale_tag 
+           SET discount = ?, sale_end_date = ?
+           WHERE stid = ? AND visible = 1`,
+          [salePrice, formattedEndDate, matchingTags[0].stid]
+        );
+        totalUpdated += result.affectedRows;
+        console.log(`Updated 1 tag (stid: ${matchingTags[0].stid}) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}" with Sale Price: "${salePrice}", date: "${formattedEndDate}"`);
+      }
+    }
+
+    return totalUpdated;
+  } catch (err) {
+    console.error('uploadSaleTagFromExcel error:', err);
+    throw err;
+  }
+};
+
 module.exports = {
   getReplenishData,
   log,
@@ -404,4 +681,5 @@ module.exports = {
   createSaleTag,
   updateSaleTag,
   deleteSaleTag,
+  uploadSaleTagFromExcel,
 };

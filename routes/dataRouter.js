@@ -279,4 +279,58 @@ router.post('/saleTag/delete', verifyAccessToken, async (req, res) => {
   }
 });
 
+router.post(
+  '/saleTag/upload',
+  verifyAccessToken,
+  upload.single('file'),
+  async (req, res) => {
+    const filePath = req.file?.path;
+    const { end_date, apply_to_all } = req.body;
+
+    if (!filePath || !end_date) {
+      return res.status(400).json({
+        status_code: 400,
+        error: 'File and end_date are required',
+      });
+    }
+
+    try {
+      const workbook = xlsx.readFile(filePath);
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+
+      // Parse Excel data - expect columns: Brand, Item Name (or Description), Sale Price
+      let jsonData = xlsx.utils.sheet_to_json(worksheet, { defval: null });
+
+      const applyToAll = apply_to_all === '1' || apply_to_all === true;
+
+      console.log('Upload request - end_date:', end_date, 'apply_to_all:', applyToAll, 'rows:', jsonData.length);
+
+      const result = await dataDBC.uploadSaleTagFromExcel(
+        jsonData,
+        end_date,
+        applyToAll
+      );
+
+      res.json({
+        status_code: 200,
+        updated_count: result,
+        message: 'Upload complete',
+      });
+    } catch (error) {
+      console.error('/saleTag/upload error:', error.stack);
+      res.status(500).json({
+        status_code: 500,
+        error: error.message || 'Upload failed',
+      });
+    } finally {
+      if (filePath) {
+        fs.unlink(filePath, (err) => {
+          if (err) console.error('Failed to remove uploaded file:', err);
+        });
+      }
+    }
+  }
+);
+
 module.exports = router;
