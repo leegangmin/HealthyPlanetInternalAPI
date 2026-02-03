@@ -330,11 +330,91 @@ const addTooGoodToGo = async (data) => {
 const getSaleTagList = async () => {
   try {
     const [rows] = await promisePool.query(
-      `SELECT * FROM sale_tag WHERE visible = 1 ORDER BY stid DESC`
+      `SELECT stid, uid, brand, description, discount, location, location_code, tag_type, tag_count, note, sale_end_date, visible, audit, tag_count_diff FROM sale_tag WHERE visible = 1 ORDER BY stid DESC`
     );
     return rows;
   } catch (err) {
     console.error('getSaleTagList error:', err);
+    throw err;
+  }
+};
+
+// Unmatched Sale Tag functions (saved from Excel upload when no DB match)
+const getUnmatchedSaleTagList = async () => {
+  try {
+    const [rows] = await promisePool.query(
+      `SELECT stid, uid, brand, description, discount, location, location_code, tag_type, tag_count, note, sale_end_date, visible, audit, tag_count_diff
+       FROM sale_tag
+       WHERE visible = 0 AND note = 'UNMATCHED'
+       ORDER BY stid DESC`
+    );
+    return rows;
+  } catch (err) {
+    console.error('getUnmatchedSaleTagList error:', err);
+    throw err;
+  }
+};
+
+const saveUnmatchedSaleTagRows = async (data) => {
+  const { uid, unmatched_rows, end_date } = data || {};
+
+  console.log('[saveUnmatchedSaleTagRows] Called with:', { uid, unmatched_rows_count: unmatched_rows?.length, end_date });
+
+  if (!uid) {
+    console.error('[saveUnmatchedSaleTagRows] Error: uid is required');
+    throw new Error('uid is required');
+  }
+  if (!Array.isArray(unmatched_rows) || unmatched_rows.length === 0) {
+    console.log('[saveUnmatchedSaleTagRows] No unmatched rows to save');
+    return 0;
+  }
+
+  // sale_tag has NOT NULL columns: discount, location, tag_count
+  // For unmatched rows we store placeholders and keep note='UNMATCHED', visible=0
+  // Note: location must be a valid location string, not empty. Use a placeholder like 'TBD' or 'UNMATCHED'
+  const values = unmatched_rows.map((r) => {
+    const brand = r.brand ?? r.Brand ?? null;
+    const description = r.itemName ?? r['Item Name'] ?? r.description ?? r.Description ?? null;
+    const discount = r.salePrice ?? r['Sale Price'] ?? r.discount ?? r.Discount ?? '';
+    const saleEnd = r.sale_end_date ?? r.end_date ?? end_date ?? null;
+    return [
+      uid,
+      brand,
+      description,
+      String(discount ?? ''),
+      'UNMATCHED', // location placeholder - use 'UNMATCHED' instead of empty string for NOT NULL constraint
+      null, // tag_type
+      0, // tag_count placeholder
+      'UNMATCHED',
+      saleEnd,
+      0, // visible
+    ];
+  });
+
+  console.log('[saveUnmatchedSaleTagRows] Prepared values for', values.length, 'rows');
+  console.log('[saveUnmatchedSaleTagRows] First row example:', values[0]);
+
+  try {
+    // Use individual INSERT statements to ensure proper handling
+    let insertedCount = 0;
+    for (const valueRow of values) {
+      try {
+        const [result] = await promisePool.query(
+          `INSERT INTO sale_tag (uid, brand, description, discount, location, tag_type, tag_count, note, sale_end_date, visible)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          valueRow
+        );
+        insertedCount += result.affectedRows;
+      } catch (rowErr) {
+        console.error('[saveUnmatchedSaleTagRows] Failed to insert row:', valueRow, 'Error:', rowErr.message);
+        // Continue with next row instead of failing completely
+      }
+    }
+    console.log('[saveUnmatchedSaleTagRows] Successfully inserted', insertedCount, 'out of', values.length, 'rows');
+    return insertedCount;
+  } catch (err) {
+    console.error('[saveUnmatchedSaleTagRows] Database error:', err.message);
+    console.error('[saveUnmatchedSaleTagRows] Error stack:', err.stack);
     throw err;
   }
 };
@@ -356,21 +436,78 @@ const createSaleTag = async (data) => {
 };
 
 const updateSaleTag = async (data) => {
-  const { id, brand, sale_item, discount, location, tag_type, tag_count, notes, end_date } = data;
+  const { id, brand, sale_item, discount, location, tag_type, tag_count, notes, end_date, audit, tag_count_diff, visible, note } = data;
 
   if (!id) {
     throw new Error('ID is required for update');
   }
 
-  if (!discount || !location || !tag_count) {
-    throw new Error('Required fields are missing');
+  // Build update query dynamically based on provided fields
+  const updateFields = [];
+  const values = [];
+
+  if (brand !== undefined) {
+    updateFields.push('brand = ?');
+    values.push(brand || null);
+  }
+  if (sale_item !== undefined) {
+    updateFields.push('description = ?');
+    values.push(sale_item || null);
+  }
+  if (discount !== undefined) {
+    updateFields.push('discount = ?');
+    values.push(discount);
+  }
+  if (location !== undefined) {
+    updateFields.push('location = ?');
+    values.push(location);
+  }
+  if (tag_type !== undefined) {
+    updateFields.push('tag_type = ?');
+    values.push(tag_type || null);
+  }
+  if (tag_count !== undefined) {
+    updateFields.push('tag_count = ?');
+    values.push(tag_count);
+  }
+  if (notes !== undefined) {
+    updateFields.push('note = ?');
+    values.push(notes || null);
+  }
+  // Support direct note field (some callers may send note)
+  if (note !== undefined) {
+    updateFields.push('note = ?');
+    values.push(note || null);
+  }
+  if (end_date !== undefined) {
+    updateFields.push('sale_end_date = ?');
+    values.push(end_date || null);
+  }
+  // Support audit field
+  if (audit !== undefined) {
+    updateFields.push('audit = ?');
+    values.push(audit);
+  }
+  // Support tag_count_diff field
+  if (tag_count_diff !== undefined) {
+    updateFields.push('tag_count_diff = ?');
+    values.push(tag_count_diff === null ? null : tag_count_diff);
+  }
+  // Support visible field (used when converting unmatched row into regular tag)
+  if (visible !== undefined) {
+    updateFields.push('visible = ?');
+    values.push(visible);
   }
 
+  if (updateFields.length === 0) {
+    throw new Error('No fields to update');
+  }
+
+  values.push(id);
+
   const [result] = await promisePool.query(
-    `UPDATE sale_tag 
-     SET brand = ?, description = ?, discount = ?, location = ?, tag_type = ?, tag_count = ?, note = ?, sale_end_date = ?
-     WHERE stid = ?`,
-    [brand || null, sale_item || null, discount, location, tag_type || null, tag_count, notes || null, end_date || null, id]
+    `UPDATE sale_tag SET ${updateFields.join(', ')} WHERE stid = ?`,
+    values
   );
 
   return result.affectedRows;
@@ -395,8 +532,11 @@ const deleteSaleTag = async (data) => {
 const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
   try {
     let totalUpdated = 0;
+    const matchedRows = new Set(); // Track which Excel rows were matched
+    const unmatchedRows = []; // Track unmatched rows for saving to DB
 
-    for (const row of excelData) {
+    for (let rowIndex = 0; rowIndex < excelData.length; rowIndex++) {
+      const row = excelData[rowIndex];
       // Get Brand - priority order:
       // 1. Exact column name "Brand"
       // 2. Column containing "ad outline" (e.g., " January 2026 Ad Outline")
@@ -569,9 +709,14 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
       }
 
       if (matchingTags.length === 0) {
-        console.log(
-          `No matching tags found for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
-        );
+        // No match found - add to unmatched rows for saving to DB
+        unmatchedRows.push({
+          brand: normalizedBrand,
+          itemName: normalizedItemName,
+          salePrice: salePrice
+        });
+        console.log(`No match found - added to unmatched rows: Brand: "${normalizedBrand}", Item: "${normalizedItemName}", Price: "${salePrice}"`);
+        
         // Try to find similar entries for debugging
         const brandSearchTerm = normalizedBrand.length >= 3 ? normalizedBrand.substring(0, Math.min(10, normalizedBrand.length)) : normalizedBrand;
         const itemSearchTerm = normalizedItemName.length >= 5 ? normalizedItemName.substring(0, Math.min(10, normalizedItemName.length)) : normalizedItemName;
@@ -590,6 +735,9 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
         console.log(`Similar items found (${similarItems.length}):`, similarItems.map(i => i.description));
         continue;
       }
+
+      // Mark this row as matched
+      matchedRows.add(rowIndex);
 
       console.log(
         `Found ${matchingTags.length} matching tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
@@ -662,7 +810,17 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
       }
     }
 
-    return totalUpdated;
+    // unmatchedRows is already collected during the matching loop above
+    // No need to rebuild it - it's already populated when matchingTags.length === 0
+
+    console.log(`Total unmatched rows collected: ${unmatchedRows.length}`);
+
+    return {
+      updatedCount: totalUpdated,
+      matchedRows: Array.from(matchedRows),
+      excelData: excelData,
+      unmatchedRows,
+    };
   } catch (err) {
     console.error('uploadSaleTagFromExcel error:', err);
     throw err;
@@ -678,6 +836,8 @@ module.exports = {
   updateSampleStatus,
   addTooGoodToGo,
   getSaleTagList,
+  getUnmatchedSaleTagList,
+  saveUnmatchedSaleTagRows,
   createSaleTag,
   updateSaleTag,
   deleteSaleTag,
