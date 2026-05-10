@@ -313,6 +313,17 @@ router.post('/saleTag/delete', verifyAccessToken, async (req, res) => {
     res.status(500).json({ status_code: 500, error: err.message });
   }
 });
+router.post('/saleTag/optimize', verifyAccessToken, async (req, res) => {
+  console.log('/saleTag/optimize');
+  try {
+    const result = await dataDBC.optimizeSaleTags();
+    res.json({ status_code: 200, data: result });
+  } catch (err) {
+    console.error('/saleTag/optimize error:', err.message);
+    res.status(500).json({ status_code: 500, error: err.message });
+  }
+});
+
 
 router.post(
   '/saleTag/upload',

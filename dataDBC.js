@@ -1,4 +1,5 @@
 const mysql = require('mysql2');
+const { google } = require('googleapis');
 const hashedPassword = require('./crypt.js');
 
 // Create the connection pool. The pool-specific settings are the defaults
@@ -326,13 +327,403 @@ const addTooGoodToGo = async (data) => {
   return result.affectedRows;
 };
 
-// Sale Tag functions
+// Sale Tag functions backed by Google Sheets
+const SALE_TAG_SHEET_NAME = process.env.DB_GOOGLE_SALE_TAG_SHEET_NAME || 'sale_tag';
+const SALE_TAG_SPREADSHEET_ID = process.env.DB_GOOGLE_SALE_TAG_SHEET_ID || process.env.DB_GOOGLE_SHEET_ID;
+const SALE_TAG_COLUMNS = [
+  'stid',
+  'uid',
+  'brand',
+  'description',
+  'discount',
+  'location',
+  'location_code',
+  'tag_type',
+  'tag_count',
+  'note',
+  'sale_end_date',
+  'visible',
+  'audit',
+  'tag_count_diff',
+];
+
+let sheetsClient;
+let saleTagSheetReady = false;
+let saleTagRowsCache = null;
+let saleTagRowsCacheTime = 0;
+let saleTagSheetId = null;
+const SALE_TAG_CACHE_TTL_MS = Number(process.env.DB_GOOGLE_SALE_TAG_CACHE_TTL_MS || 30000);
+
+const saleTagRange = (range) => `'${SALE_TAG_SHEET_NAME}'!${range}`;
+
+const parseGooglePrivateKey = () => {
+  const key = process.env.DB_GOOGLE_PRIVATE_KEY;
+  return key ? key.replace(/\\n/g, '\n') : undefined;
+};
+
+const getSheetsClient = async () => {
+  if (!SALE_TAG_SPREADSHEET_ID) {
+    throw new Error('DB_GOOGLE_SALE_TAG_SHEET_ID or DB_GOOGLE_SHEET_ID is required');
+  }
+
+  if (!sheetsClient) {
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        type: process.env.DB_GOOGLE_ACCOUNT_TYPE || 'service_account',
+        project_id: process.env.DB_GOOGLE_PROJECT_ID,
+        private_key_id: process.env.DB_GOOGLE_PRIVATE_KEY_ID,
+        private_key: parseGooglePrivateKey(),
+        client_email: process.env.DB_GOOGLE_CLIENT_EMAIL,
+        client_id: process.env.DB_GOOGLE_CLIENT_ID,
+        token_uri: process.env.DB_GOOGLE_TOKEN_URI || 'https://oauth2.googleapis.com/token',
+      },
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+
+  sheetsClient = google.sheets({ version: 'v4', auth });
+  }
+
+  return sheetsClient;
+};
+
+const clearSaleTagCache = () => {
+  saleTagRowsCache = null;
+  saleTagRowsCacheTime = 0;
+};
+
+const resolveSaleTagSheetId = async (sheets) => {
+  if (saleTagSheetId) return saleTagSheetId;
+
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    fields: 'sheets.properties.sheetId,sheets.properties.title',
+  });
+
+  const matchedSheet = spreadsheet.data.sheets?.find(
+    (sheet) => sheet.properties?.title === SALE_TAG_SHEET_NAME
+  );
+
+  if (!matchedSheet?.properties?.sheetId) {
+    throw new Error(`Sheet "${SALE_TAG_SHEET_NAME}" not found`);
+  }
+
+  saleTagSheetId = matchedSheet.properties.sheetId;
+  return saleTagSheetId;
+};
+
+async function seedSaleTagSheetFromMysqlIfEmpty(sheets) {
+  if (String(process.env.DB_GOOGLE_SALE_TAG_SKIP_SEED || '').toLowerCase() === 'true') {
+    return;
+  }
+
+  const existing = await sheets.spreadsheets.values.get({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    range: saleTagRange('A2:N2'),
+  });
+
+  if (existing.data.values?.length) {
+    return;
+  }
+
+  const [rows] = await promisePool.query(
+    `SELECT stid, uid, brand, description, discount, location, location_code, tag_type, tag_count, note, sale_end_date, visible, audit, tag_count_diff
+     FROM sale_tag
+     ORDER BY stid ASC`
+  );
+
+  if (!rows.length) {
+    return;
+  }
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    range: saleTagRange('A:N'),
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rows.map(saleTagToSheetRow) },
+  });
+
+  console.log(`[sale_tag] Seeded ${rows.length} rows from MySQL into Google Sheets`);
+}
+const ensureSaleTagSheet = async () => {
+  if (saleTagSheetReady) return;
+
+  const sheets = await getSheetsClient();
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    fields: 'sheets.properties.title',
+  });
+  const exists = spreadsheet.data.sheets?.some(
+    (sheet) => sheet.properties?.title === SALE_TAG_SHEET_NAME
+  );
+
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: SALE_TAG_SHEET_NAME } } }],
+      },
+    });
+  }
+
+  const header = await sheets.spreadsheets.values.get({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    range: saleTagRange('A1:N1'),
+  });
+
+  const currentHeader = header.data.values?.[0] || [];
+  if (SALE_TAG_COLUMNS.some((column, index) => currentHeader[index] !== column)) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+      range: saleTagRange('A1:N1'),
+      valueInputOption: 'RAW',
+      requestBody: { values: [SALE_TAG_COLUMNS] },
+    });
+  }
+
+  await seedSaleTagSheetFromMysqlIfEmpty(sheets);
+
+  saleTagSheetReady = true;
+};
+
+const normalizeSheetValue = (value) => {
+  if (value === undefined || value === null) return '';
+  return value;
+};
+
+const numberOrNull = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isNaN(number) ? value : number;
+};
+
+const visibleValue = (value) => {
+  if (value === undefined || value === null || value === '') return 1;
+  if (value === true) return 1;
+  if (value === false) return 0;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '0' || normalized === 'false' ? 0 : 1;
+};
+
+const sheetRowToSaleTag = (values, rowNumber) => {
+  const row = {};
+  SALE_TAG_COLUMNS.forEach((column, index) => {
+    row[column] = values[index] ?? '';
+  });
+
+  return {
+    stid: numberOrNull(row.stid),
+    uid: numberOrNull(row.uid),
+    brand: row.brand || null,
+    description: row.description || null,
+    discount: row.discount || '',
+    location: row.location || '',
+    location_code: row.location_code || null,
+    tag_type: row.tag_type || null,
+    tag_count: numberOrNull(row.tag_count) ?? 0,
+    note: row.note || null,
+    sale_end_date: row.sale_end_date || null,
+    visible: visibleValue(row.visible),
+    audit: row.audit || null,
+    tag_count_diff: numberOrNull(row.tag_count_diff),
+    _rowNumber: rowNumber,
+  };
+};
+
+const saleTagToSheetRow = (tag) =>
+  SALE_TAG_COLUMNS.map((column) => normalizeSheetValue(tag[column]));
+
+const cloneSaleTagRows = (rows) => rows.map((row) => ({ ...row }));
+
+const setSaleTagRowsCache = (rows) => {
+  saleTagRowsCache = cloneSaleTagRows(rows);
+  saleTagRowsCacheTime = Date.now();
+};
+
+const getCachedSaleTagRows = () => {
+  if (!saleTagRowsCache) return null;
+  if (Date.now() - saleTagRowsCacheTime > SALE_TAG_CACHE_TTL_MS) return null;
+  return cloneSaleTagRows(saleTagRowsCache);
+};
+
+const readSaleTagRows = async ({ force = false } = {}) => {
+  if (!force) {
+    const cachedRows = getCachedSaleTagRows();
+    if (cachedRows) return cachedRows;
+  }
+
+  await ensureSaleTagSheet();
+  const sheets = await getSheetsClient();
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    range: saleTagRange('A2:N'),
+  });
+
+    const rows = (response.data.values || []).map((values, index) =>
+      sheetRowToSaleTag(values, index + 2)
+    );
+  setSaleTagRowsCache(rows);
+  return cloneSaleTagRows(rows);
+};
+const nextSaleTagId = (rows) =>
+  rows.reduce((max, row) => {
+    const id = Number(row.stid);
+    return Number.isFinite(id) && id > max ? id : max;
+  }, 0) + 1;
+
+const appendSaleTags = async (tags) => {
+  if (tags.length === 0) return 0;
+
+  await ensureSaleTagSheet();
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    range: saleTagRange('A:N'),
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: tags.map(saleTagToSheetRow) },
+  });
+
+  if (saleTagRowsCache) {
+    const startRowNumber = saleTagRowsCache.length + 2;
+    saleTagRowsCache = [
+      ...saleTagRowsCache,
+      ...tags.map((tag, index) => ({ ...tag, _rowNumber: startRowNumber + index })),
+    ];
+    saleTagRowsCacheTime = Date.now();
+  }
+
+  return tags.length;
+};
+const updateSaleTagRow = async (rowNumber, tag) => {
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    range: saleTagRange(`A${rowNumber}:N${rowNumber}`),
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [saleTagToSheetRow(tag)] },
+  });
+
+  if (saleTagRowsCache) {
+    saleTagRowsCache = saleTagRowsCache.map((row) =>
+      row._rowNumber === rowNumber ? { ...tag, _rowNumber: rowNumber } : row
+    );
+    saleTagRowsCacheTime = Date.now();
+  }
+};
+const updateSaleTagRows = async (tags) => {
+  if (tags.length === 0) return 0;
+
+  await ensureSaleTagSheet();
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data: tags.map((tag) => ({
+        range: saleTagRange(`A${tag._rowNumber}:N${tag._rowNumber}`),
+        values: [saleTagToSheetRow(tag)],
+      })),
+    },
+  });
+
+  if (saleTagRowsCache) {
+    const updatedByRow = new Map(tags.map((tag) => [tag._rowNumber, tag]));
+    saleTagRowsCache = saleTagRowsCache.map((row) =>
+      updatedByRow.has(row._rowNumber) ? { ...updatedByRow.get(row._rowNumber) } : row
+    );
+    saleTagRowsCacheTime = Date.now();
+  }
+
+  return tags.length;
+};
+
+const deleteSaleTagRowsFromSheet = async (rowNumbers) => {
+  if (!rowNumbers || rowNumbers.length === 0) return 0;
+
+  const sheets = await getSheetsClient();
+  const sheetId = await resolveSaleTagSheetId(sheets);
+
+  const uniqueRows = Array.from(new Set(rowNumbers))
+    .filter((rowNumber) => Number.isFinite(Number(rowNumber)))
+    .map((rowNumber) => Number(rowNumber))
+    .filter((rowNumber) => rowNumber >= 2)
+    .sort((a, b) => b - a);
+
+  if (uniqueRows.length === 0) return 0;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SALE_TAG_SPREADSHEET_ID,
+    requestBody: {
+      requests: uniqueRows.map((rowNumber) => ({
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: 'ROWS',
+            startIndex: rowNumber - 1,
+            endIndex: rowNumber,
+          },
+        },
+      })),
+    },
+  });
+
+  clearSaleTagCache();
+  return uniqueRows.length;
+};
+const normalizeForSaleTagMatch = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/['"]/g, "'")
+    .toLowerCase();
+
+const applySaleTagFields = (tag, data) => {
+  const next = { ...tag };
+
+  if (data.brand !== undefined) next.brand = data.brand || null;
+  if (data.sale_item !== undefined) next.description = data.sale_item || null;
+  if (data.description !== undefined) next.description = data.description || null;
+  if (data.discount !== undefined) next.discount = data.discount;
+  if (data.location !== undefined) next.location = data.location;
+  if (data.location_code !== undefined) next.location_code = data.location_code || null;
+  if (data.tag_type !== undefined) next.tag_type = data.tag_type || null;
+  if (data.tag_count !== undefined) next.tag_count = data.tag_count;
+  if (data.notes !== undefined) next.note = data.notes || null;
+  if (data.note !== undefined) next.note = data.note || null;
+  if (data.end_date !== undefined) next.sale_end_date = data.end_date || null;
+  if (data.sale_end_date !== undefined) next.sale_end_date = data.sale_end_date || null;
+  if (data.audit !== undefined) next.audit = data.audit;
+  if (data.tag_count_diff !== undefined) next.tag_count_diff = data.tag_count_diff === null ? null : data.tag_count_diff;
+  if (data.visible !== undefined) next.visible = visibleValue(data.visible);
+
+  return next;
+};
+
+const buildSaleTag = (data, stid) => ({
+  stid,
+  uid: data.uid,
+  brand: data.brand || null,
+  description: data.sale_item || data.description || null,
+  discount: data.discount,
+  location: data.location,
+  location_code: data.location_code || null,
+  tag_type: data.tag_type || null,
+  tag_count: data.tag_count,
+  note: data.notes || data.note || null,
+  sale_end_date: data.end_date || data.sale_end_date || null,
+  visible: visibleValue(data.visible),
+  audit: data.audit || null,
+  tag_count_diff: data.tag_count_diff === undefined ? null : data.tag_count_diff,
+});
+
 const getSaleTagList = async () => {
   try {
-    const [rows] = await promisePool.query(
-      `SELECT stid, uid, brand, description, discount, location, location_code, tag_type, tag_count, note, sale_end_date, visible, audit, tag_count_diff FROM sale_tag WHERE visible = 1 ORDER BY stid DESC`
-    );
-    return rows;
+    const rows = await readSaleTagRows();
+    return rows
+      .filter((row) => visibleValue(row.visible) === 1)
+      .sort((a, b) => Number(b.stid || 0) - Number(a.stid || 0))
+      .map(({ _rowNumber, ...row }) => row);
   } catch (err) {
     console.error('getSaleTagList error:', err);
     throw err;
@@ -342,13 +733,11 @@ const getSaleTagList = async () => {
 // Unmatched Sale Tag functions (saved from Excel upload when no DB match)
 const getUnmatchedSaleTagList = async () => {
   try {
-    const [rows] = await promisePool.query(
-      `SELECT stid, uid, brand, description, discount, location, location_code, tag_type, tag_count, note, sale_end_date, visible, audit, tag_count_diff
-       FROM sale_tag
-       WHERE visible = 0 AND note = 'UNMATCHED'
-       ORDER BY stid DESC`
-    );
-    return rows;
+    const rows = await readSaleTagRows();
+    return rows
+      .filter((row) => visibleValue(row.visible) === 0 && row.note === 'UNMATCHED')
+      .sort((a, b) => Number(b.stid || 0) - Number(a.stid || 0))
+      .map(({ _rowNumber, ...row }) => row);
   } catch (err) {
     console.error('getUnmatchedSaleTagList error:', err);
     throw err;
@@ -369,148 +758,71 @@ const saveUnmatchedSaleTagRows = async (data) => {
     return 0;
   }
 
-  // sale_tag has NOT NULL columns: discount, location, tag_count
-  // For unmatched rows we store placeholders and keep note='UNMATCHED', visible=0
-  // Note: location must be a valid location string, not empty. Use a placeholder like 'TBD' or 'UNMATCHED'
-  const values = unmatched_rows.map((r) => {
+  const existingRows = await readSaleTagRows();
+  let stid = nextSaleTagId(existingRows);
+  const tags = unmatched_rows.map((r) => {
     const brand = r.brand ?? r.Brand ?? null;
     const description = r.itemName ?? r['Item Name'] ?? r.description ?? r.Description ?? null;
     const discount = r.salePrice ?? r['Sale Price'] ?? r.discount ?? r.Discount ?? '';
     const saleEnd = r.sale_end_date ?? r.end_date ?? end_date ?? null;
-    return [
-      uid,
-      brand,
-      description,
-      String(discount ?? ''),
-      'UNMATCHED', // location placeholder - use 'UNMATCHED' instead of empty string for NOT NULL constraint
-      null, // tag_type
-      0, // tag_count placeholder
-      'UNMATCHED',
-      saleEnd,
-      0, // visible
-    ];
+
+    return buildSaleTag(
+      {
+        uid,
+        brand,
+        description,
+        discount: String(discount ?? ''),
+        location: 'UNMATCHED',
+        tag_type: null,
+        tag_count: 0,
+        note: 'UNMATCHED',
+        sale_end_date: saleEnd,
+        visible: 0,
+      },
+      stid++
+    );
   });
 
-  console.log('[saveUnmatchedSaleTagRows] Prepared values for', values.length, 'rows');
-  console.log('[saveUnmatchedSaleTagRows] First row example:', values[0]);
-
   try {
-    // Use individual INSERT statements to ensure proper handling
-    let insertedCount = 0;
-    for (const valueRow of values) {
-      try {
-        const [result] = await promisePool.query(
-          `INSERT INTO sale_tag (uid, brand, description, discount, location, tag_type, tag_count, note, sale_end_date, visible)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          valueRow
-        );
-        insertedCount += result.affectedRows;
-      } catch (rowErr) {
-        console.error('[saveUnmatchedSaleTagRows] Failed to insert row:', valueRow, 'Error:', rowErr.message);
-        // Continue with next row instead of failing completely
-      }
-    }
-    console.log('[saveUnmatchedSaleTagRows] Successfully inserted', insertedCount, 'out of', values.length, 'rows');
+    const insertedCount = await appendSaleTags(tags);
+    console.log('[saveUnmatchedSaleTagRows] Successfully inserted', insertedCount, 'out of', tags.length, 'rows');
     return insertedCount;
   } catch (err) {
-    console.error('[saveUnmatchedSaleTagRows] Database error:', err.message);
+    console.error('[saveUnmatchedSaleTagRows] Google Sheets error:', err.message);
     console.error('[saveUnmatchedSaleTagRows] Error stack:', err.stack);
     throw err;
   }
 };
 
 const createSaleTag = async (data) => {
-  const { uid, brand, sale_item, discount, location, tag_type, tag_count, notes, end_date } = data;
+  const { uid, discount, location, tag_count } = data;
 
   if (!uid || !discount || !location || !tag_count) {
     throw new Error('Required fields are missing');
   }
 
-  const [result] = await promisePool.query(
-    `INSERT INTO sale_tag (uid, brand, description, discount, location, tag_type, tag_count, note, sale_end_date, visible) 
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-    [uid, brand || null, sale_item || null, discount, location, tag_type || null, tag_count, notes || null, end_date || null]
-  );
-
-  return result.affectedRows;
+  const rows = await readSaleTagRows();
+  const tag = buildSaleTag({ ...data, visible: 1 }, nextSaleTagId(rows));
+  return appendSaleTags([tag]);
 };
 
 const updateSaleTag = async (data) => {
-  const { id, brand, sale_item, discount, location, tag_type, tag_count, notes, end_date, audit, tag_count_diff, visible, note } = data;
+  const { id } = data;
 
   if (!id) {
     throw new Error('ID is required for update');
   }
 
-  // Build update query dynamically based on provided fields
-  const updateFields = [];
-  const values = [];
+  const rows = await readSaleTagRows();
+  const tag = rows.find((row) => String(row.stid) === String(id));
 
-  if (brand !== undefined) {
-    updateFields.push('brand = ?');
-    values.push(brand || null);
-  }
-  if (sale_item !== undefined) {
-    updateFields.push('description = ?');
-    values.push(sale_item || null);
-  }
-  if (discount !== undefined) {
-    updateFields.push('discount = ?');
-    values.push(discount);
-  }
-  if (location !== undefined) {
-    updateFields.push('location = ?');
-    values.push(location);
-  }
-  if (tag_type !== undefined) {
-    updateFields.push('tag_type = ?');
-    values.push(tag_type || null);
-  }
-  if (tag_count !== undefined) {
-    updateFields.push('tag_count = ?');
-    values.push(tag_count);
-  }
-  if (notes !== undefined) {
-    updateFields.push('note = ?');
-    values.push(notes || null);
-  }
-  // Support direct note field (some callers may send note)
-  if (note !== undefined) {
-    updateFields.push('note = ?');
-    values.push(note || null);
-  }
-  if (end_date !== undefined) {
-    updateFields.push('sale_end_date = ?');
-    values.push(end_date || null);
-  }
-  // Support audit field
-  if (audit !== undefined) {
-    updateFields.push('audit = ?');
-    values.push(audit);
-  }
-  // Support tag_count_diff field
-  if (tag_count_diff !== undefined) {
-    updateFields.push('tag_count_diff = ?');
-    values.push(tag_count_diff === null ? null : tag_count_diff);
-  }
-  // Support visible field (used when converting unmatched row into regular tag)
-  if (visible !== undefined) {
-    updateFields.push('visible = ?');
-    values.push(visible);
+  if (!tag) {
+    return 0;
   }
 
-  if (updateFields.length === 0) {
-    throw new Error('No fields to update');
-  }
-
-  values.push(id);
-
-  const [result] = await promisePool.query(
-    `UPDATE sale_tag SET ${updateFields.join(', ')} WHERE stid = ?`,
-    values
-  );
-
-  return result.affectedRows;
+  const updatedTag = applySaleTagFields(tag, data);
+  await updateSaleTagRow(tag._rowNumber, updatedTag);
+  return 1;
 };
 
 const deleteSaleTag = async (data) => {
@@ -520,38 +832,102 @@ const deleteSaleTag = async (data) => {
     throw new Error('ID is required for delete');
   }
 
-  // Soft delete by setting visible to 0
-  const [result] = await promisePool.query(
-    `UPDATE sale_tag SET visible = 0 WHERE stid = ?`,
-    [id]
-  );
-
-  return result.affectedRows;
+  return updateSaleTag({ id, visible: 0 });
 };
+const optimizeSaleTags = async () => {
+  try {
+    const rows = await readSaleTagRows({ force: true });
+    const visibleRows = rows.filter((row) => visibleValue(row.visible) === 1);
+    const groups = new Map();
+
+    visibleRows.forEach((row) => {
+      const key = [
+        row.brand,
+        row.description,
+        row.discount,
+        row.location,
+        row.tag_type,
+      ]
+        .map(normalizeForSaleTagMatch)
+        .join('||');
+
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key).push(row);
+    });
+
+    const updates = [];
+    const deleteRows = [];
+    let mergedRows = 0;
+    let mergedGroups = 0;
+
+    groups.forEach((groupRows) => {
+      if (groupRows.length < 2) return;
+
+      const [keeper, ...duplicates] = groupRows.sort(
+        (a, b) => Number(a.stid || 0) - Number(b.stid || 0)
+      );
+      const totalTagCount = groupRows.reduce((sum, row) => {
+        const count = Number(row.tag_count || 0);
+        return sum + (Number.isFinite(count) ? count : 0);
+      }, 0);
+
+      updates.push({
+        ...keeper,
+        tag_count: totalTagCount,
+        visible: 1,
+      });
+      duplicates.forEach((row) => {
+        if (Number.isFinite(Number(row._rowNumber))) {
+          deleteRows.push(Number(row._rowNumber));
+        }
+      });
+
+      mergedGroups += 1;
+      mergedRows += duplicates.length;
+    });
+
+    if (updates.length > 0) {
+      await updateSaleTagRows(updates);
+    }
+    if (deleteRows.length > 0) {
+      await deleteSaleTagRowsFromSheet(deleteRows);
+    }
+
+    return {
+      merged_groups: mergedGroups,
+      merged_rows: mergedRows,
+      updated_rows: updates.length,
+      deleted_rows: deleteRows.length,
+    };
+  } catch (err) {
+    console.error('optimizeSaleTags error:', err);
+    throw err;
+  }
+};
+
 
 const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
   try {
     let totalUpdated = 0;
-    const matchedRows = new Set(); // Track which Excel rows were matched
-    const unmatchedRows = []; // Track unmatched rows for saving to DB
+    const matchedRows = new Set();
+    const unmatchedRows = [];
+    const pendingUpdatedTags = new Map();
+    const saleTags = await readSaleTagRows();
 
     for (let rowIndex = 0; rowIndex < excelData.length; rowIndex++) {
       const row = excelData[rowIndex];
-      // Get Brand - priority order:
-      // 1. Exact column name "Brand"
-      // 2. Column containing "ad outline" (e.g., " January 2026 Ad Outline")
       let brand = null;
-      // Try exact column name first
+
       if (row.hasOwnProperty('Brand') && row['Brand'] != null && row['Brand'] !== '') {
         brand = String(row['Brand']).trim();
       } else if (row.hasOwnProperty('brand') && row['brand'] != null && row['brand'] !== '') {
         brand = String(row['brand']).trim();
       } else {
-        // Try "ad outline" pattern (this is the actual Brand column in the Excel file)
         for (const key of Object.keys(row)) {
           if (key && key.toLowerCase().includes('ad outline')) {
             const value = row[key];
-            // Make sure it's not a number (Sale Price is in date columns)
             if (typeof value !== 'number') {
               brand = String(value).trim();
               break;
@@ -560,11 +936,7 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
         }
       }
 
-      // Get Item Name / Description - priority order:
-      // 1. Exact column name "Item Name" or "Description"
-      // 2. __EMPTY (first empty column, which is Item Name in this Excel format)
       let itemName = null;
-      // Try exact column names first
       if (row.hasOwnProperty('Item Name') && row['Item Name'] != null && row['Item Name'] !== '') {
         itemName = String(row['Item Name']).trim();
       } else if (row.hasOwnProperty('item name') && row['item name'] != null && row['item name'] !== '') {
@@ -573,200 +945,91 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
         itemName = String(row['Description']).trim();
       } else if (row.hasOwnProperty('description') && row['description'] != null && row['description'] !== '') {
         itemName = String(row['description']).trim();
-      } else {
-        // Try __EMPTY (this is the actual Item Name column in the Excel file)
-        if (row.hasOwnProperty('__EMPTY') && row['__EMPTY'] != null && row['__EMPTY'] !== '') {
-          itemName = String(row['__EMPTY']).trim();
-        }
+      } else if (row.hasOwnProperty('__EMPTY') && row['__EMPTY'] != null && row['__EMPTY'] !== '') {
+        itemName = String(row['__EMPTY']).trim();
       }
 
-      // Get Sale Price / Discount - priority order:
-      // 1. Exact column name "Sale Price" or "Price" or "Discount"
-      // 2. Date-like columns (e.g., "January 8 - February 4 2026") containing numeric values
-      // IMPORTANT: Do NOT use "ad outline" column for Sale Price
       let salePrice = null;
-      // Try exact column names first
       if (row.hasOwnProperty('Sale Price') && row['Sale Price'] != null && row['Sale Price'] !== '') {
         const value = row['Sale Price'];
         salePrice = typeof value === 'number' ? String(value) : String(value).trim();
-        console.log(`Found Sale Price from exact column "Sale Price": "${salePrice}"`);
       } else if (row.hasOwnProperty('sale price') && row['sale price'] != null && row['sale price'] !== '') {
         const value = row['sale price'];
         salePrice = typeof value === 'number' ? String(value) : String(value).trim();
-        console.log(`Found Sale Price from exact column "sale price": "${salePrice}"`);
       } else if (row.hasOwnProperty('Price') && row['Price'] != null && row['Price'] !== '') {
         const value = row['Price'];
         salePrice = typeof value === 'number' ? String(value) : String(value).trim();
-        console.log(`Found Sale Price from exact column "Price": "${salePrice}"`);
       } else if (row.hasOwnProperty('Discount') && row['Discount'] != null && row['Discount'] !== '') {
         const value = row['Discount'];
         salePrice = typeof value === 'number' ? String(value) : String(value).trim();
-        console.log(`Found Sale Price from exact column "Discount": "${salePrice}"`);
       } else {
-        // Try date-like columns (e.g., "January 8 - February 4 2026") - these contain the discount percentage
-        // But exclude "ad outline" columns
         for (const key of Object.keys(row)) {
-          // Skip "ad outline" columns - these are Brand columns, not Sale Price
           if (key && key.toLowerCase().includes('ad outline')) {
             continue;
           }
-          
-          // Look for date-like columns (containing year)
+
           if (key && (key.includes('2026') || key.includes('2025') || key.includes('2024'))) {
             const value = row[key];
-            
-            // First check if it's a string (could be "Buy 1 Get 2nd 50%", "20% OFF", etc.)
+
             if (typeof value === 'string' && value.trim()) {
-              // Use the string value directly as Sale Price
               salePrice = value.trim();
-              console.log(`Found Sale Price from date column "${key}": "${salePrice}" (string value)`);
               break;
             } else if (typeof value === 'number') {
               if (value > 0 && value <= 1) {
-                // Likely a percentage (0.2 = 20%)
                 salePrice = `${(value * 100).toFixed(0)}% OFF`;
-                console.log(`Found Sale Price from date column "${key}": "${salePrice}" (from numeric value: ${value})`);
                 break;
               } else if (value > 1) {
-                // Likely a price
                 salePrice = String(value);
-                console.log(`Found Sale Price from date column "${key}": "${salePrice}" (from numeric value: ${value})`);
                 break;
               }
             }
           }
         }
       }
-      
-      // Final validation: salePrice should not be the same as brand or itemName
+
       if (salePrice && (String(salePrice).trim() === String(brand).trim() || String(salePrice).trim() === String(itemName).trim())) {
         console.error(`ERROR: salePrice is incorrectly set to brand or itemName! salePrice: "${salePrice}", brand: "${brand}", itemName: "${itemName}"`);
         salePrice = null;
       }
 
       if (!brand || !itemName || !salePrice) {
-        console.log('Skipping row - missing required fields:', {
-          brand,
-          itemName,
-          salePrice,
-          row
-        });
+        console.log('Skipping row - missing required fields:', { brand, itemName, salePrice, row });
         continue;
       }
 
-      // Normalize brand and itemName for matching (trim, lowercase, remove extra spaces, normalize special characters)
       const normalizedBrand = (brand || '').toString().trim().replace(/\s+/g, ' ').replace(/['"]/g, "'");
       const normalizedItemName = (itemName || '').toString().trim().replace(/\s+/g, ' ').replace(/['"]/g, "'");
 
-      console.log(`Attempting to match - Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`);
-      console.log(`Brand length: ${normalizedBrand.length}, Item length: ${normalizedItemName.length}`);
-
-      // Only use exact match (case-insensitive, trimmed, normalized spaces)
-      // Normalize multiple spaces in database values
-      const [matchingTags] = await promisePool.query(
-        `SELECT stid, brand, description FROM sale_tag 
-         WHERE LOWER(TRIM(REPLACE(brand, '  ', ' '))) = LOWER(?) 
-         AND LOWER(TRIM(REPLACE(description, '  ', ' '))) = LOWER(?) 
-         AND visible = 1`,
-        [normalizedBrand, normalizedItemName]
+      const matchingTags = saleTags.filter(
+        (tag) =>
+          visibleValue(tag.visible) === 1 &&
+          normalizeForSaleTagMatch(tag.brand) === normalizeForSaleTagMatch(normalizedBrand) &&
+          normalizeForSaleTagMatch(tag.description) === normalizeForSaleTagMatch(normalizedItemName)
       );
-      
-      // If no match, try to find what's actually in the database for debugging
-      if (matchingTags.length === 0) {
-        const [dbBrands] = await promisePool.query(
-          `SELECT DISTINCT brand FROM sale_tag 
-           WHERE LOWER(TRIM(REPLACE(brand, '  ', ' '))) LIKE LOWER(?) 
-           AND visible = 1 LIMIT 5`,
-          [`%${normalizedBrand.substring(0, Math.min(20, normalizedBrand.length))}%`]
-        );
-        const [dbItems] = await promisePool.query(
-          `SELECT DISTINCT description FROM sale_tag 
-           WHERE LOWER(TRIM(REPLACE(description, '  ', ' '))) LIKE LOWER(?) 
-           AND visible = 1 LIMIT 5`,
-          [`%${normalizedItemName.substring(0, Math.min(30, normalizedItemName.length))}%`]
-        );
-        console.log(`No exact match found. Searching for similar entries:`);
-        console.log(`DB Brands containing "${normalizedBrand.substring(0, 20)}":`, dbBrands.map(b => `"${b.brand}"`));
-        console.log(`DB Items containing "${normalizedItemName.substring(0, 30)}":`, dbItems.map(i => `"${i.description}"`));
-        
-        // Also try to find exact matches with different normalization
-        const [exactBrandMatch] = await promisePool.query(
-          `SELECT stid, brand, description FROM sale_tag 
-           WHERE brand = ? AND visible = 1 LIMIT 1`,
-          [brand]
-        );
-        const [exactItemMatch] = await promisePool.query(
-          `SELECT stid, brand, description FROM sale_tag 
-           WHERE description = ? AND visible = 1 LIMIT 1`,
-          [itemName]
-        );
-        if (exactBrandMatch.length > 0) {
-          console.log(`Found exact brand match (case-sensitive): "${exactBrandMatch[0].brand}"`);
-        }
-        if (exactItemMatch.length > 0) {
-          console.log(`Found exact item match (case-sensitive): "${exactItemMatch[0].description}"`);
-        }
-      }
 
       if (matchingTags.length === 0) {
-        // No match found - add to unmatched rows for saving to DB
         unmatchedRows.push({
           brand: normalizedBrand,
           itemName: normalizedItemName,
-          salePrice: salePrice
+          salePrice,
         });
         console.log(`No match found - added to unmatched rows: Brand: "${normalizedBrand}", Item: "${normalizedItemName}", Price: "${salePrice}"`);
-        
-        // Try to find similar entries for debugging
-        const brandSearchTerm = normalizedBrand.length >= 3 ? normalizedBrand.substring(0, Math.min(10, normalizedBrand.length)) : normalizedBrand;
-        const itemSearchTerm = normalizedItemName.length >= 5 ? normalizedItemName.substring(0, Math.min(10, normalizedItemName.length)) : normalizedItemName;
-        
-        const [similarBrands] = await promisePool.query(
-          `SELECT DISTINCT brand FROM sale_tag WHERE LOWER(TRIM(brand)) LIKE LOWER(?) AND visible = 1 LIMIT 10`,
-          [`%${brandSearchTerm}%`]
-        );
-        const [similarItems] = await promisePool.query(
-          `SELECT DISTINCT description FROM sale_tag WHERE LOWER(TRIM(description)) LIKE LOWER(?) AND visible = 1 LIMIT 10`,
-          [`%${itemSearchTerm}%`]
-        );
-        console.log(`Looking for Brand: "${normalizedBrand}"`);
-        console.log(`Similar brands found (${similarBrands.length}):`, similarBrands.map(b => b.brand));
-        console.log(`Looking for Item: "${normalizedItemName}"`);
-        console.log(`Similar items found (${similarItems.length}):`, similarItems.map(i => i.description));
         continue;
       }
 
-      // Mark this row as matched
       matchedRows.add(rowIndex);
 
-      console.log(
-        `Found ${matchingTags.length} matching tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
-      );
-      if (matchingTags.length > 0) {
-        console.log(`Matched tags:`, matchingTags.map(t => ({ stid: t.stid, brand: t.brand, description: t.description })));
-      }
-
-      console.log(
-        `Found ${matchingTags.length} matching tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`
-      );
-
-      // Ensure endDate is in YYYY-MM-DD format (parse as local date, not UTC)
       let formattedEndDate = endDate;
       if (typeof endDate === 'string' && endDate.length > 0) {
-        // If it's already in YYYY-MM-DD format, use as is
         if (/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
           formattedEndDate = endDate;
         } else {
-          // Try to parse and reformat - use local timezone to avoid day shift
           const dateMatch = endDate.match(/(\d{4})-(\d{2})-(\d{2})/);
           if (dateMatch) {
-            // Direct extraction from string to avoid timezone conversion
             formattedEndDate = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
           } else {
-            // Fallback to Date parsing but use local components
             const dateObj = new Date(endDate);
             if (!isNaN(dateObj.getTime())) {
-              // Use local date components to avoid UTC conversion
               const year = dateObj.getFullYear();
               const month = String(dateObj.getMonth() + 1).padStart(2, '0');
               const day = String(dateObj.getDate()).padStart(2, '0');
@@ -775,50 +1038,32 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
           }
         }
       }
-      
-      console.log(`Updating with Sale Price: "${salePrice}", endDate: "${formattedEndDate}" for Brand: "${normalizedBrand}", Item: "${normalizedItemName}"`);
 
-      // Validate salePrice before updating
       if (!salePrice || salePrice === normalizedBrand || salePrice === normalizedItemName) {
         console.error(`ERROR: Invalid salePrice value! salePrice: "${salePrice}", brand: "${normalizedBrand}", itemName: "${normalizedItemName}"`);
         continue;
       }
 
-      if (applyToAll) {
-        // Update all matching tags - use normalized values for WHERE clause
-        // Update discount (Sale Price) and sale_end_date
-        const [result] = await promisePool.query(
-          `UPDATE sale_tag 
-           SET discount = ?, sale_end_date = ?
-           WHERE LOWER(TRIM(REPLACE(brand, '  ', ' '))) = LOWER(?) 
-           AND LOWER(TRIM(REPLACE(description, '  ', ' '))) = LOWER(?) 
-           AND visible = 1`,
-          [salePrice, formattedEndDate, normalizedBrand, normalizedItemName]
-        );
-        totalUpdated += result.affectedRows;
-        console.log(`Updated ${result.affectedRows} tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}" with Sale Price: "${salePrice}", date: "${formattedEndDate}"`);
-      } else {
-        // Update only the first matching tag
-        const [result] = await promisePool.query(
-          `UPDATE sale_tag 
-           SET discount = ?, sale_end_date = ?
-           WHERE stid = ? AND visible = 1`,
-          [salePrice, formattedEndDate, matchingTags[0].stid]
-        );
-        totalUpdated += result.affectedRows;
-        console.log(`Updated 1 tag (stid: ${matchingTags[0].stid}) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}" with Sale Price: "${salePrice}", date: "${formattedEndDate}"`);
-      }
+      const tagsToUpdate = applyToAll ? matchingTags : [matchingTags[0]];
+      tagsToUpdate.forEach((tag) => {
+        tag.discount = salePrice;
+        tag.sale_end_date = formattedEndDate;
+      });
+      tagsToUpdate.forEach((tag) => pendingUpdatedTags.set(tag._rowNumber, { ...tag }));
+      totalUpdated += tagsToUpdate.length;
+      console.log(`Updated ${tagsToUpdate.length} tag(s) for Brand: "${normalizedBrand}", Item: "${normalizedItemName}" with Sale Price: "${salePrice}", date: "${formattedEndDate}"`);
     }
 
-    // unmatchedRows is already collected during the matching loop above
-    // No need to rebuild it - it's already populated when matchingTags.length === 0
+    if (pendingUpdatedTags.size > 0) {
+      await updateSaleTagRows(Array.from(pendingUpdatedTags.values()));
+    }
 
     console.log(`Total unmatched rows collected: ${unmatchedRows.length}`);
 
     return {
       updatedCount: totalUpdated,
       matchedRows: Array.from(matchedRows),
-      excelData: excelData,
+      excelData,
       unmatchedRows,
     };
   } catch (err) {
@@ -826,7 +1071,6 @@ const uploadSaleTagFromExcel = async (excelData, endDate, applyToAll) => {
     throw err;
   }
 };
-
 module.exports = {
   getReplenishData,
   log,
@@ -841,5 +1085,6 @@ module.exports = {
   createSaleTag,
   updateSaleTag,
   deleteSaleTag,
+  optimizeSaleTags,
   uploadSaleTagFromExcel,
 };
